@@ -41,10 +41,6 @@ final class AppModel {
                     for index in blocks.indices { blocks[index].translation = nil }
                 } else { translateCurrentBlocks() }
             }
-            if settings.translationQuality != oldValue.translationQuality {
-                let quality = settings.translationQuality
-                Task { await translation.loadLanguages(quality: quality) }
-            }
             updateOverlay()
             updateRecognitionMonitoring()
         }
@@ -75,6 +71,9 @@ final class AppModel {
     private var hasFreshScrollRecognition = false
     private var interactionRefreshTask: Task<Void, Never>?
     private var needsTranslation = false
+    private var languageOptionsTask: Task<Void, Never>?
+    private var languageOptionsID: UUID?
+    private var loadedLanguageQuality: TranslationQuality?
     private let hotKeys = GlobalHotKeyService()
     private let recognitionLogger = Logger(subsystem: "com.linelens.app", category: "Recognition")
     private var fingerprint: UInt64?
@@ -162,10 +161,6 @@ final class AppModel {
         translation.needsPresentation = { [weak self] in self?.showResults() }
         configureHotKeys()
         Task {
-            ocrLanguages = (try? await ocr.supportedLanguages()) ?? []
-            await translation.loadLanguages(quality: settings.translationQuality)
-        }
-        Task {
             if !(await capture.verifyAccess()) { windowsController?.showWelcome() }
         }
         updateRecognitionMonitoring()
@@ -173,7 +168,35 @@ final class AppModel {
 
     func shutdown() {
         stop()
+        languageOptionsTask?.cancel()
         hotKeys.shutdown()
+    }
+
+    func loadLanguageOptionsIfNeeded() async {
+        if let languageOptionsTask { await languageOptionsTask.value }
+        guard !Task.isCancelled else { return }
+        let quality = settings.translationQuality
+        guard ocrLanguages.isEmpty || translation.supportedLanguages.isEmpty || loadedLanguageQuality != quality else { return }
+        let id = UUID()
+        let load = Task { [weak self] in
+            guard let self else { return }
+            if self.ocrLanguages.isEmpty { self.ocrLanguages = (try? await self.ocr.supportedLanguages()) ?? [] }
+            guard !Task.isCancelled else { return }
+            await self.translation.loadLanguages(quality: quality)
+            guard !Task.isCancelled else { return }
+            self.loadedLanguageQuality = quality
+        }
+        languageOptionsTask = load
+        languageOptionsID = id
+        await withTaskCancellationHandler {
+            await load.value
+        } onCancel: {
+            load.cancel()
+        }
+        if languageOptionsID == id {
+            languageOptionsTask = nil
+            languageOptionsID = nil
+        }
     }
 
     private func configureHotKeys() {
@@ -304,6 +327,7 @@ final class AppModel {
         windowsController?.closeWindowPicker()
         cancelWork()
         target = nextTarget
+        windowsController?.prepareForRecognition()
         isSelecting = false
         isPaused = false
         blocks = []
@@ -333,6 +357,7 @@ final class AppModel {
         windowsController?.windowSelection.cancel()
         windowsController?.closeWindowPicker()
         windowsController?.overlay.hide()
+        windowsController?.releaseIdleResources()
     }
 
     func togglePause() {

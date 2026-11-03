@@ -77,6 +77,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 500, minHeight: 580)
+        .task(id: model.settings.translationQuality) { await model.loadLanguageOptionsIfNeeded() }
         .onAppear { refreshSystemSettings() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshSystemSettings()

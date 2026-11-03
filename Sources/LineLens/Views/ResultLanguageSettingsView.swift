@@ -28,5 +28,6 @@ struct ResultLanguageSettingsView: View {
         }
         .padding(16)
         .frame(width: 340)
+        .task(id: model.settings.translationQuality) { await model.loadLanguageOptionsIfNeeded() }
     }
 }
