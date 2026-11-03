@@ -1,0 +1,32 @@
+# OS metadata
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+
+# Local editor settings and temporary files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment files (keep shareable templates)
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.*.sample
+!.env.template
+!.env.*.template
+
+# Logs
+*.log
+
+# Swift build output and local app bundles
+.build/
+.swiftpm/
+dist/
+DerivedData/
+xcuserdata/
