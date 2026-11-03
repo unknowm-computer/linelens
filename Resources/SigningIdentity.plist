@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>BundleIdentifier</key><string>com.linelens.app</string>
+    <key>CertificateSHA1</key><string>E819B2005AA325E604AB3AC15A456032C2A8882D</string>
+</dict>
+</plist>
