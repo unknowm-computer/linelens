@@ -99,23 +99,27 @@ versioned_info="$metadata_dir/$info_digest.plist"
 if [[ ! -f "$versioned_info" ]]; then cp "$info_candidate" "$versioned_info"; fi
 rm -f "$info_candidate"
 linker_arguments=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$versioned_info")
+mkdir -p "$output_dir"
+output_dir="$(cd "$output_dir" && pwd)"
+app_dir="$output_dir/LineLens.app"
+task_staging="$(mktemp -d "$output_dir/.build-app.XXXXXX")"
+trap 'rm -rf "$task_staging"' EXIT
 binary_paths=()
 if [[ "$universal" == "1" ]]; then
     for task_arch in arm64 x86_64; do
         swift build -c "$configuration" --arch "$task_arch" "${linker_arguments[@]}"
         binary_dir="$(swift build -c "$configuration" --arch "$task_arch" --show-bin-path)"
-        binary_paths+=("$binary_dir/LineLens")
+        # Some SwiftPM build systems share the output path between architectures.
+        # Preserve each executable before the next build can replace it.
+        lipo "$binary_dir/LineLens" -verify_arch "$task_arch"
+        cp "$binary_dir/LineLens" "$task_staging/LineLens-$task_arch"
+        binary_paths+=("$task_staging/LineLens-$task_arch")
     done
 else
     swift build -c "$configuration" "${linker_arguments[@]}"
     binary_dir="$(swift build -c "$configuration" --show-bin-path)"
     binary_paths+=("$binary_dir/LineLens")
 fi
-mkdir -p "$output_dir"
-output_dir="$(cd "$output_dir" && pwd)"
-app_dir="$output_dir/LineLens.app"
-task_staging="$(mktemp -d "$output_dir/.build-app.XXXXXX")"
-trap 'rm -rf "$task_staging"' EXIT
 staged_app="$task_staging/LineLens.app"
 mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
 if [[ "$universal" == "1" ]]; then
@@ -124,6 +128,7 @@ else
     cp "${binary_paths[0]}" "$staged_app/Contents/MacOS/LineLens"
 fi
 cp "$versioned_info" "$staged_app/Contents/Info.plist"
+cp "$task_root/Resources/AppIcon.icns" "$staged_app/Contents/Resources/AppIcon.icns"
 # Preserve the versioned framework's symlinks. LineLens is not sandboxed, so its
 # unused XPC services are omitted, as supported by Sparkle's integration guide.
 framework_source="$task_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"

@@ -65,9 +65,11 @@ actor AccessibilityTextService {
         let until: ContinuousClock.Instant
     }
     private var unsupported: UnsupportedWindow?
+    private var captureRect: CGRect?
 
     func read(processID: pid_t, windowRect: CGRect, captureRect: CGRect) throws -> [TextBlock]? {
         guard AXIsProcessTrusted() else { return nil }
+        if self.captureRect != captureRect { unsupported = nil; self.captureRect = captureRect }
         if let unsupported, unsupported.processID == processID, unsupported.rect == windowRect,
            ContinuousClock.now < unsupported.until { return nil }
         let result = try readWindow(processID: processID, windowRect: windowRect, captureRect: captureRect)

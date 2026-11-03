@@ -9,8 +9,15 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
     private let page = NSTextField(labelWithString: "Page 123")
     private let backgroundMark = NSView(frame: CGRect(x: 650, y: 26, width: 6, height: 6))
     private var number = 123
+    private var scrollView: NSScrollView?
+    private var animation: Timer?
+    private var scrollDirection: CGFloat = 1
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--scroll") || Bundle.main.object(forInfoDictionaryKey: "LineLensScrollFixture") as? Bool == true {
+            makeScrollWindow()
+            return
+        }
         let window = NSWindow(contentRect: CGRect(x: 80, y: 220, width: 720, height: 360),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "LineLens OCR QA"
@@ -75,7 +82,90 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate {
             ? NSColor.black.cgColor : NSColor.white.cgColor
     }
 
+    private func makeScrollWindow() {
+        let window = NSWindow(contentRect: CGRect(x: 80, y: 120, width: 840, height: 620),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "LineLens Scroll QA"
+        window.isReleasedWhenClosed = false
+        let content = NSView(frame: CGRect(x: 0, y: 0, width: 840, height: 620))
+        content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor(calibratedWhite: 0.86, alpha: 1).cgColor
+        let header = NSTextField(labelWithString: "Fixed header · stays in place")
+        header.font = .systemFont(ofSize: 22, weight: .semibold)
+        header.textColor = .black
+        header.frame = CGRect(x: 20, y: 574, width: 360, height: 30)
+        content.addSubview(header)
+        for (i, title) in ["Fixed sidebar", "Navigation", "Settings", "Documents", "Account"].enumerated() {
+            let label = NSTextField(labelWithString: title)
+            label.font = .systemFont(ofSize: 18)
+            label.textColor = .black
+            label.frame = CGRect(x: 20, y: 500 - i * 58, width: 150, height: 28)
+            content.addSubview(label)
+        }
+        let animate = NSButton(title: "Start smooth scroll", target: self, action: #selector(toggleScrollAnimation(_:)))
+        animate.bezelStyle = .rounded
+        animate.frame = CGRect(x: 410, y: 574, width: 190, height: 32)
+        content.addSubview(animate)
+        let jump = NSButton(title: "Jump down", target: self, action: #selector(jumpScroll))
+        jump.bezelStyle = .rounded
+        jump.frame = CGRect(x: 625, y: 574, width: 170, height: 32)
+        content.addSubview(jump)
+        let scroll = NSScrollView(frame: CGRect(x: 180, y: 0, width: 660, height: 560))
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .white
+        let document = FlippedFixtureView(frame: CGRect(x: 0, y: 0, width: 640, height: 5200))
+        document.wantsLayer = true
+        document.layer?.backgroundColor = NSColor.white.cgColor
+        for i in 0..<100 {
+            let label = NSTextField(labelWithString: "Article \(123 + i): This translated line should move naturally.")
+            label.font = .systemFont(ofSize: 18)
+            label.textColor = .black
+            label.frame = CGRect(x: 22, y: 18 + i * 50, width: 600, height: 30)
+            document.addSubview(label)
+        }
+        scroll.documentView = document
+        content.addSubview(scroll)
+        scrollView = scroll
+        window.contentView = content
+        self.window = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func toggleScrollAnimation(_ sender: NSButton) {
+        if let animation {
+            animation.invalidate(); self.animation = nil
+            sender.title = "Start smooth scroll"
+            return
+        }
+        sender.title = "Stop smooth scroll"
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let scroll = self.scrollView, let document = scroll.documentView else { return }
+                var y = scroll.contentView.bounds.minY + self.scrollDirection * 3
+                let maximum = document.bounds.height - scroll.contentView.bounds.height
+                if y > maximum || y < 0 { self.scrollDirection *= -1; y = min(max(0, y), maximum) }
+                scroll.contentView.scroll(to: CGPoint(x: 0, y: y))
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        animation = timer
+    }
+
+    @objc private func jumpScroll() {
+        guard let scroll = scrollView, let document = scroll.documentView else { return }
+        let y = min(scroll.contentView.bounds.minY + 500, document.bounds.height - scroll.contentView.bounds.height)
+        scroll.contentView.scroll(to: CGPoint(x: 0, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
+private final class FlippedFixtureView: NSView {
+    override var isFlipped: Bool { true }
 }
 
 @main

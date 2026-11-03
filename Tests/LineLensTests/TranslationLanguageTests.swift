@@ -5,6 +5,33 @@ import LineLensCore
 
 final class TranslationLanguageTests: XCTestCase {
     @MainActor
+    func testTextCacheSurvivesScrollCancellationAndUsesNewBlockIdentifiers() async throws {
+        guard #available(macOS 26, *) else { throw XCTSkip("Direct installed sessions require macOS 26") }
+        let source = Locale.Language(identifier: "en"), target = Locale.Language(identifier: "ko")
+        guard await LanguageAvailability().status(from: source, to: target) == .installed else { throw XCTSkip("Models not installed") }
+        let engine = TranslationEngine()
+        var settings = AppSettings()
+        settings.sourceLanguage = "en"
+        let before = TextBlock(source: "Open application settings", rect: CGRect(x: 0, y: 0.2, width: 0.4, height: 0.1), confidence: 1)
+        var old: [UUID: String] = [:]
+        engine.submit(blocks: [before], settings: settings) { old = $0 }
+        await engine.run(using: TranslationSession(installedSource: source, target: target))
+        XCTAssertNotNil(old[before.id])
+        engine.cancel()
+        let after = TextBlock(source: before.source, rect: CGRect(x: 0.5, y: 0.7, width: 0.3, height: 0.1), confidence: 1)
+        var fresh: [UUID: String] = [:]
+        engine.submit(blocks: [after], settings: settings) { fresh = $0 }
+        XCTAssertEqual(fresh[after.id], old[before.id])
+        XCTAssertNil(fresh[before.id])
+        XCTAssertNil(engine.configuration, "An exact text cache hit must not wait for another TranslationSession")
+        XCTAssertFalse(engine.isWorking)
+        settings.translationQuality = .quality
+        engine.submit(blocks: [after], settings: settings) { _ in XCTFail("A different quality must not reuse the speed cache") }
+        XCTAssertTrue(engine.isWorking)
+        engine.cancel()
+    }
+
+    @MainActor
     func testAutomaticSourceUsesFullScreenContextForChangingShortLabels() {
         let context = "Application Settings. Prevent the computer from sleeping while the app is running. Page 124."
         XCTAssertEqual(TranslationEngine.resolvedSourceLanguage("auto", context: context), "en")

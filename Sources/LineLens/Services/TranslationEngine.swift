@@ -68,6 +68,17 @@ final class TranslationEngine {
         }
         let next = Job(blocks: translatable, source: source, target: settings.targetLanguage, quality: settings.translationQuality,
                        preserved: preserved, completion: completion)
+        var cached = preserved
+        for block in translatable {
+            if let value = cache[cacheKey(block.source, job: next)] { cached[block.id] = value }
+        }
+        if cached.count == blocks.count {
+            // A newly recognized layout has new identifiers and coordinates.
+            // Reuse text immediately without starting another system session.
+            cancel()
+            completion(cached)
+            return
+        }
         job = next
         isWorking = true
         message = nil

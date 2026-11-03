@@ -29,10 +29,12 @@ enum CaptureTarget: Equatable, Sendable {
 final class CapturedSurface: @unchecked Sendable {
     let buffer: CVPixelBuffer
     let surface: IOSurfaceRef
-    init?(buffer: CVPixelBuffer) {
+    let sequence: UInt64
+    init?(buffer: CVPixelBuffer, sequence: UInt64 = 0) {
         guard let surface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() else { return nil }
         self.buffer = buffer
         self.surface = surface
+        self.sequence = sequence
     }
 }
 
@@ -40,6 +42,7 @@ struct CapturedFrame: Sendable {
     let image: CGImage
     let fingerprint: UInt64
     var pixels: ImagePixels? = nil
+    var sequence: UInt64 = 0
 }
 
 struct CapturedImage: Sendable {
@@ -47,6 +50,7 @@ struct CapturedImage: Sendable {
     let screenRect: CGRect
     let fingerprint: UInt64
     var pixels: ImagePixels? = nil
+    var sequence: UInt64 = 0
 }
 
 enum LineLensError: LocalizedError {

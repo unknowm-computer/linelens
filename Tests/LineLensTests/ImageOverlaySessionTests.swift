@@ -277,6 +277,27 @@ final class ImageOverlaySessionTests: XCTestCase {
     }
 
     @MainActor
+    func testOlderCapturedFrameCannotReplaceTheLatestScreenAfterScroll() async throws {
+        let session = ImageOverlaySession()
+        defer { session.reset() }
+        var first = try frame(number: 123)
+        first.sequence = 10
+        var old = try frame(number: 124)
+        old.sequence = 15
+        var current = try frame(number: 123)
+        current.sequence = 20
+        session.observe(first)
+        session.observe(current)
+        // AppModel also feeds the capture used by OCR into the session. A
+        // delayed capture must not rewind a newer continuous-capture frame.
+        session.observe(old)
+        let stale = await session.accept(captured(old), blocks: [block(number: 124)])
+        XCTAssertFalse(stale)
+        let fresh = await session.accept(captured(current), blocks: [block(number: 123)])
+        XCTAssertTrue(fresh)
+    }
+
+    @MainActor
     func testResetCancelsPendingComposition() async throws {
         let session = ImageOverlaySession()
         let first = try frame()

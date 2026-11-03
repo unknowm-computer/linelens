@@ -70,7 +70,9 @@ app_dir="$payload/LineLens.app"
 if [[ -n "$previous_app" ]]; then
     "$task_root/scripts/verify-update.sh" "$previous_app" "$app_dir"
 fi
-lipo "$app_dir/Contents/MacOS/LineLens" -verify_arch arm64 x86_64
+for task_arch in arm64 x86_64; do
+    lipo "$app_dir/Contents/MacOS/LineLens" -verify_arch "$task_arch"
+done
 cp "$task_root/docs/distribution-install.txt" "$payload/INSTALL.txt"
 archive_name="LineLens-$app_version-universal.zip"
 ditto -c -k --sequesterRsrc "$payload" "$artifacts/$archive_name"
@@ -83,7 +85,9 @@ bundle_identifier="$(/usr/libexec/PlistBuddy -c 'Print :BundleIdentifier' "$iden
 fingerprint="$(/usr/libexec/PlistBuddy -c 'Print :CertificateSHA1' "$identity_config")"
 requirement="identifier \"$bundle_identifier\" and certificate leaf = H\"$fingerprint\""
 codesign --verify --all-architectures --deep --strict -R="$requirement" "$extracted_dir/LineLens.app"
-lipo "$extracted_dir/LineLens.app/Contents/MacOS/LineLens" -verify_arch arm64 x86_64
+for task_arch in arm64 x86_64; do
+    lipo "$extracted_dir/LineLens.app/Contents/MacOS/LineLens" -verify_arch "$task_arch"
+done
 cmp "$app_dir/Contents/MacOS/LineLens" "$extracted_dir/LineLens.app/Contents/MacOS/LineLens"
 cmp "$app_dir/Contents/Info.plist" "$extracted_dir/LineLens.app/Contents/Info.plist"
 cmp "$task_root/docs/distribution-install.txt" "$extracted_dir/INSTALL.txt"

@@ -114,7 +114,7 @@ struct ResultsView: View {
                 }
             }
             HStack {
-                Toggle("Apple 로컬 번역", isOn: $model.settings.translationEnabled)
+                Toggle("자동 번역", isOn: $model.settings.translationEnabled)
                     .toggleStyle(.switch).controlSize(.small)
                 Spacer()
                 Button("언어", systemImage: "globe") { isChoosingLanguage = true }

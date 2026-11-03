@@ -7,28 +7,70 @@ final class TranslationOverlayController {
     private let content = OverlayView()
     private var liveSurface: CapturedSurface?
     private var livePreview = false
+    private var scrollSuppressed = false
+    private var fadeTask: Task<Void, Never>?
+    private var fadeID = UUID()
 
     var patchLayerCount: Int { content.patchLayerCount }
     var backgroundContents: Any? { content.background.contents }
+    var patchOpacity: Float { content.patchOpacity }
 
     func updateBackground(_ surface: CapturedSurface) {
+        // Keep only the current capture for restoration. It must not be painted
+        // while scrolling, or replaced by an older OCR snapshot on fade-in.
         liveSurface = surface
+        guard !scrollSuppressed else { return }
         guard livePreview, window?.isVisible == true else { return }
         content.setBackground(surface.surface)
     }
 
-    func show(rect: CGRect, presentation: OverlayPresentation, livePreview: Bool, level: NSWindow.Level = .floating, topInset: CGFloat = 0) {
+    func show(rect: CGRect, presentation: OverlayPresentation, livePreview: Bool, level: NSWindow.Level = .floating,
+              topInset: CGFloat = 0, fadeIn: Bool = false) {
+        guard !scrollSuppressed || fadeIn else { return }
+        cancelFade()
+        scrollSuppressed = false
         ensureWindow()
         self.livePreview = livePreview && presentation.coversSource
+        // Install geometry, contents and initial opacity in a single transaction.
+        // A newly attached patch must never flash at full opacity before fading.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         if window?.level != level { window?.level = level }
         let frame = CaptureGeometry.flipScreenRect(rect, mainDisplayHeight: NSScreen.screens.first?.frame.height ?? 0)
-        if window?.frame != frame { window?.setFrame(frame, display: false) }
+        if window?.frame != frame { window?.setFrame(frame, display: false, animate: false) }
+        content.layoutSubtreeIfNeeded()
         content.install(presentation, topInset: topInset)
         if presentation.coversSource {
             if self.livePreview, let liveSurface { content.setBackground(liveSurface.surface) }
             else { content.setBackground(presentation.source) }
         } else { content.setBackground(nil) }
+        if fadeIn { content.fadePatches(from: 0, to: 1, duration: 0.1) }
+        CATransaction.commit()
         if window?.isVisible != true { window?.orderFrontRegardless() }
+    }
+
+    func fadeOutAndDiscard(duration: TimeInterval = 0.08) {
+        cancelFade()
+        scrollSuppressed = true
+        livePreview = false
+        liveSurface = nil
+        // Reveal the actual app immediately. Only translation patches fade;
+        // a captured background must not remain frozen over the scrolling app.
+        content.setBackground(nil)
+        guard window?.isVisible == true, duration > 0 else {
+            content.clear()
+            return
+        }
+        content.fadePatches(to: 0, duration: duration)
+        let token = fadeID
+        fadeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard !Task.isCancelled, let self, self.fadeID == token else { return }
+            // Keep the same transparent, click-through window mapped. Ordering
+            // it out/in can add AppKit's own zoom/fade and expose an empty frame.
+            self.content.clear()
+            self.fadeTask = nil
+        }
     }
 
     func show(rect: CGRect, image: CGImage, level: NSWindow.Level = .floating, topInset: CGFloat = 0) {
@@ -44,6 +86,7 @@ final class TranslationOverlayController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        panel.animationBehavior = .none
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.contentView = content
@@ -53,22 +96,32 @@ final class TranslationOverlayController {
     func hide() { window?.orderOut(nil) }
 
     func clear() {
+        cancelFade()
+        scrollSuppressed = false
         hide()
         liveSurface = nil
         livePreview = false
         content.clear()
+    }
+
+    private func cancelFade() {
+        fadeTask?.cancel()
+        fadeTask = nil
+        fadeID = UUID()
     }
 }
 
 @MainActor
 private final class OverlayView: NSView {
     let background = CALayer()
+    private let patchRoot = CALayer()
     private let clip = CALayer()
     private var patches: [UUID: CALayer] = [:]
     private var patchImages: [UUID: CGImage] = [:]
     private var patchRects: [UUID: CGRect] = [:]
     private var topInset: CGFloat = 0
     var patchLayerCount: Int { patches.count }
+    var patchOpacity: Float { patchRoot.opacity }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -78,6 +131,7 @@ private final class OverlayView: NSView {
         background.minificationFilter = .nearest
         background.magnificationFilter = .nearest
         layer?.addSublayer(background)
+        layer?.addSublayer(patchRoot)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -86,6 +140,21 @@ private final class OverlayView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         background.contents = contents
+        CATransaction.commit()
+    }
+
+    func fadePatches(from explicitStart: Float? = nil, to opacity: Float, duration: TimeInterval) {
+        let start = explicitStart ?? patchRoot.presentation()?.opacity ?? patchRoot.opacity
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        patchRoot.removeAnimation(forKey: "scrollOpacity")
+        patchRoot.opacity = opacity
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = start
+        animation.toValue = opacity
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        patchRoot.add(animation, forKey: "scrollOpacity")
         CATransaction.commit()
     }
 
@@ -107,7 +176,7 @@ private final class OverlayView: NSView {
                 patchLayer.contentsGravity = .resize
                 patchLayer.minificationFilter = .nearest
                 patchLayer.magnificationFilter = .nearest
-                layer?.addSublayer(patchLayer)
+                patchRoot.addSublayer(patchLayer)
                 patches[patch.id] = patchLayer
             }
             if patchImages[patch.id] !== patch.image {
@@ -131,6 +200,7 @@ private final class OverlayView: NSView {
 
     private func updateFrames() {
         background.frame = bounds
+        patchRoot.frame = bounds
         clip.backgroundColor = NSColor.black.cgColor
         clip.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - topInset))
         for (id, rect) in patchRects {
@@ -140,10 +210,15 @@ private final class OverlayView: NSView {
     }
 
     func clear() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         setBackground(nil)
+        patchRoot.removeAllAnimations()
+        patchRoot.opacity = 1
         for patch in patches.values { patch.removeFromSuperlayer() }
         patches.removeAll()
         patchImages.removeAll()
         patchRects.removeAll()
+        CATransaction.commit()
     }
 }

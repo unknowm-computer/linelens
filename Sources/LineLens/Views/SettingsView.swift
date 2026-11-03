@@ -9,6 +9,9 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("일반") {
+                LaunchAtLoginSettingsView(service: model.launchAtLogin)
+            }
             Section("인식 및 번역") {
                 Picker("텍스트 읽기", selection: $model.settings.recognitionSource) {
                     ForEach(TextRecognitionSource.allCases) { Text($0.title).tag($0) }
@@ -66,12 +69,7 @@ struct SettingsView: View {
                 if let error = model.hotKeyError { Text(error).font(.caption).foregroundStyle(.orange) }
             }
             Section("권한") {
-                Button("화면 기록 권한 설정 열기") { openScreenPermissionSettings() }
-                LabeledContent("앱 텍스트 접근", value: model.accessibility.isTrusted ? "허용됨" : "권한 없음 · OCR 사용 중")
-                HStack {
-                    Button("접근성 권한 허용 안내") { model.accessibility.requestPermission() }
-                    Button("권한 상태 확인") { model.accessibility.refresh() }
-                }
+                PermissionSettingsView(model: model)
             }
             Section("업데이트") {
                 UpdateSettingsView(updater: model.updater)
@@ -79,7 +77,10 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 500, minHeight: 580)
-        .onAppear { model.accessibility.refresh() }
+        .onAppear { refreshSystemSettings() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshSystemSettings()
+        }
         .sheet(item: $recording) { action in
             ShortcutRecorderView(title: action == .capture ? "영역 선택 단축키" : "인식 해제 단축키") { shortcut in
                 if action == .capture { model.settings.captureShortcut = shortcut }
@@ -87,6 +88,12 @@ struct SettingsView: View {
                 recording = nil
             } onCancel: { recording = nil }
         }
+    }
+
+    private func refreshSystemSettings() {
+        model.launchAtLogin.refresh()
+        model.accessibility.refresh()
+        Task { await model.capture.recheckIfAuthorizationChanged() }
     }
 
     private func shortcutRow(_ title: String, shortcut: KeyboardShortcut?, action: ShortcutAction) -> some View {
@@ -107,5 +114,11 @@ struct SettingsView: View {
 @MainActor
 func openScreenPermissionSettings() {
     guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
+    NSWorkspace.shared.open(url)
+}
+
+@MainActor
+func openAccessibilitySettings() {
+    guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
     NSWorkspace.shared.open(url)
 }

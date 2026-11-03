@@ -97,6 +97,8 @@ private final class CaptureStreamOutput: NSObject, SCStreamOutput, SCStreamDeleg
     // Accessed only on the serial sampleHandlerQueue.
     private var lastAnalysisTime: UInt64 = 0
     private var pendingBuffer: CVPixelBuffer?
+    private var sequence: UInt64 = 0
+    private var pendingSequence: UInt64 = 0
     private var analysisScheduled = false
     private let onError: @Sendable (any Error) -> Void
     private let onUnavailable: @Sendable () -> Void
@@ -121,8 +123,11 @@ private final class CaptureStreamOutput: NSObject, SCStreamOutput, SCStreamDeleg
             return
         }
         guard let buffer = sampleBuffer.imageBuffer else { return }
-        if let surface = CapturedSurface(buffer: buffer) { onPreview(surface) }
+        // Monotonic across replacement streams (for example after resizing).
+        sequence = DispatchTime.now().uptimeNanoseconds
+        if let surface = CapturedSurface(buffer: buffer, sequence: sequence) { onPreview(surface) }
         pendingBuffer = buffer
+        pendingSequence = sequence
         let now = DispatchTime.now().uptimeNanoseconds
         if now - lastAnalysisTime >= 200_000_000 { analyzeLatest() }
         else if !analysisScheduled {
@@ -141,7 +146,8 @@ private final class CaptureStreamOutput: NSObject, SCStreamOutput, SCStreamDeleg
         let image = CIImage(cvPixelBuffer: buffer)
         guard let result = context.createCGImage(image, from: image.extent) else { return }
         let pixels = ImagePixels(result)
-        onFrame(CapturedFrame(image: result, fingerprint: pixels?.fingerprint ?? ImageFingerprint.make(result), pixels: pixels))
+        onFrame(CapturedFrame(image: result, fingerprint: pixels?.fingerprint ?? ImageFingerprint.make(result), pixels: pixels,
+            sequence: pendingSequence))
     }
 
     func stream(_ stream: SCStream, didStopWithError error: any Error) { onError(error) }

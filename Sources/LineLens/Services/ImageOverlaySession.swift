@@ -11,8 +11,8 @@ struct OverlayPresentation {
 /// Pending text is masked in the renderer so translation latency cannot freeze UI feedback.
 @MainActor
 final class ImageOverlaySession {
-    private let renderer = OverlayImageRenderer()
-    private let matcher = OverlayFrameMatcher()
+    private var renderer = OverlayImageRenderer()
+    private var matcher = OverlayFrameMatcher()
     private var state = OverlayFrameState()
     private var source: CapturedImage?
     private var sourceBlocks: [TextBlock] = []
@@ -44,7 +44,11 @@ final class ImageOverlaySession {
     }
 
     func observe(_ frame: CapturedFrame) {
-        guard latestFrame?.fingerprint != frame.fingerprint else { return }
+        if let latestFrame, frame.sequence > 0, latestFrame.sequence > frame.sequence { return }
+        guard latestFrame?.fingerprint != frame.fingerprint else {
+            latestFrame = frame
+            return
+        }
         latestFrame = frame
         validationTask?.cancel()
         guard let source else {
@@ -129,6 +133,10 @@ final class ImageOverlaySession {
     func reset() {
         suspend()
         invalidateImage()
+        // A new screen must not reuse images or comparison pixels belonging to
+        // a pre-scroll layout. TranslationEngine's text-only cache is separate.
+        renderer = OverlayImageRenderer()
+        matcher = OverlayFrameMatcher()
     }
 
     private func comparisonRegions(_ blocks: [TextBlock], size: CGSize, topInset: CGFloat) -> [CGRect] {

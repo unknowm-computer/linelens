@@ -10,9 +10,12 @@ enum ScreenAccessState: Equatable {
 
 @MainActor @Observable
 final class ScreenCaptureService {
+    typealias WindowInfoProvider = (CGWindowListOption, CGWindowID) -> [[String: Any]]?
+
     private(set) var accessState: ScreenAccessState = .unchecked
     private let accessProbe: () async throws -> Void
     private let accessReset: () async throws -> Void
+    private let windowInfoProvider: WindowInfoProvider
     private var accessCheck: Task<Bool, Never>?
     private let logger = Logger(subsystem: "com.linelens.app", category: "ScreenAccess")
     private var lastPreflight: Bool?
@@ -32,9 +35,11 @@ final class ScreenCaptureService {
     init(accessProbe: @escaping () async throws -> Void = {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         guard !content.displays.isEmpty else { throw LineLensError.noDisplay }
-    }, accessReset: @escaping () async throws -> Void = ScreenCaptureService.resetSystemPermission) {
+    }, accessReset: @escaping () async throws -> Void = ScreenCaptureService.resetSystemPermission,
+         windowInfoProvider: @escaping WindowInfoProvider = ScreenCaptureService.systemWindowInfo) {
         self.accessProbe = accessProbe
         self.accessReset = accessReset
+        self.windowInfoProvider = windowInfoProvider
     }
 
     /// CoreGraphics preflight can disagree with ScreenCaptureKit after a permission or signing
@@ -162,7 +167,7 @@ final class ScreenCaptureService {
                 let token = liveCaptureGeneration
                 do {
                     let frame = try await liveCapture.frame()
-                    return CapturedImage(image: frame.image, screenRect: visibleRect ?? liveCapture.screenRect, fingerprint: frame.fingerprint, pixels: frame.pixels)
+                    return CapturedImage(image: frame.image, screenRect: visibleRect ?? liveCapture.screenRect, fingerprint: frame.fingerprint, pixels: frame.pixels, sequence: frame.sequence)
                 } catch {
                     if token == liveCaptureGeneration { stopLiveCapture() }
                     throw error
@@ -195,7 +200,7 @@ final class ScreenCaptureService {
                 try await session.start(filter: setup.filter, configuration: setup.configuration)
                 guard token == liveCaptureGeneration else { session.stop(); throw CancellationError() }
                 let frame = try await session.frame()
-                return CapturedImage(image: frame.image, screenRect: setup.screenRect, fingerprint: frame.fingerprint, pixels: frame.pixels)
+                return CapturedImage(image: frame.image, screenRect: setup.screenRect, fingerprint: frame.fingerprint, pixels: frame.pixels, sequence: frame.sequence)
             } catch {
                 session.stop()
                 if token == liveCaptureGeneration { liveCapture = nil }
@@ -259,18 +264,15 @@ final class ScreenCaptureService {
     }
 
     func visibleFrame(for target: CaptureTarget) -> CGRect? {
-        if case .window(_, let pid, _, _) = target {
-            let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            guard frontPID == pid || frontPID == ProcessInfo.processInfo.processIdentifier else { return nil }
-        }
+        // An inactive window can remain fully visible beside the active app.
+        // Actual overlap is checked separately by isOccluded, not by focus.
         return availableFrame(for: target)
     }
 
     /// Window-only captures omit menus, sheets in other windows and overlapping
     /// apps. Hide the screenshot rather than painting over those live controls.
     func isOccluded(_ target: CaptureTarget, rect: CGRect, overlayWindowID: Int?) -> Bool {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
-                as? [[String: Any]] else { return true }
+        guard let list = windowInfoProvider([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) else { return true }
         let ownPID = ProcessInfo.processInfo.processIdentifier
         for info in list {
             guard let number = info[kCGWindowNumber as String] as? Int else { continue }
@@ -312,26 +314,33 @@ final class ScreenCaptureService {
 
     func overlayLevel(for target: CaptureTarget) -> NSWindow.Level {
         guard case .window(let id, _, _, _) = target,
-              let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]],
+              let list = windowInfoProvider([.optionIncludingWindow], id),
               let layer = list.first?[kCGWindowLayer as String] as? Int else { return .floating }
         return NSWindow.Level(rawValue: max(NSWindow.Level.floating.rawValue, layer + 1))
     }
 
-    /// Capture the selected window while using another app. Foreground state controls
-    /// overlay visibility separately; minimized/closed windows remain unavailable.
+    /// On-screen membership, not activation, determines availability. Minimized,
+    /// closed and off-space windows remain unavailable; overlap is checked separately.
     func availableFrame(for target: CaptureTarget) -> CGRect? {
         switch target {
         case .region(let id, let rect):
             return NSScreen.screens.contains { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id } ? rect : nil
         case .window(let id, _, _, let crop):
-            guard let frame = Self.windowFrame(id: id) else { return nil }
+            guard let frame = Self.onScreenFrame(windowInfoProvider([.optionIncludingWindow], id)?.first) else { return nil }
             return crop.map { CaptureGeometry.resolve($0, in: frame) } ?? frame
         }
     }
 
     static func windowFrame(id: CGWindowID) -> CGRect? {
-        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]],
-              let info = list.first,
+        onScreenFrame(systemWindowInfo([.optionIncludingWindow], id)?.first)
+    }
+
+    private nonisolated static func systemWindowInfo(_ options: CGWindowListOption, _ id: CGWindowID) -> [[String: Any]]? {
+        CGWindowListCopyWindowInfo(options, id) as? [[String: Any]]
+    }
+
+    private static func onScreenFrame(_ info: [String: Any]?) -> CGRect? {
+        guard let info,
               info[kCGWindowIsOnscreen as String] as? Bool == true,
               let rawBounds = info[kCGWindowBounds as String] as? NSDictionary,
               let frame = CGRect(dictionaryRepresentation: rawBounds),

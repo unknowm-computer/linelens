@@ -27,6 +27,11 @@ final class AppModel {
                 cancelWork()
                 if hasTarget { requestRefresh() }
             }
+            if settings.livePreview != oldValue.livePreview {
+                cancelWork()
+                fingerprint = nil
+                if hasTarget { requestRefresh() }
+            }
             if settings.translationEnabled != oldValue.translationEnabled
                 || settings.sourceLanguage != oldValue.sourceLanguage || settings.targetLanguage != oldValue.targetLanguage
                 || settings.translationQuality != oldValue.translationQuality {
@@ -41,6 +46,7 @@ final class AppModel {
                 Task { await translation.loadLanguages(quality: quality) }
             }
             updateOverlay()
+            updateRecognitionMonitoring()
         }
     }
     var target: CaptureTarget?
@@ -57,10 +63,16 @@ final class AppModel {
     let capture = ScreenCaptureService()
     let accessibility = AccessibilityAccess()
     let updater = AppUpdater()
-    private let ocr = OCRService()
+    let launchAtLogin = LaunchAtLoginService()
+    private var ocr = OCRService()
     private let accessibleText = AccessibilityTextService()
     private let imageOverlay = ImageOverlaySession()
     private let interactions = OverlayInteractionMonitor()
+    private let monitoring = RecognitionMonitoringController()
+    private let scrollActivity = ScrollActivityController()
+    private(set) var isScrolling = false
+    private(set) var isWaitingForScrollTranslation = false
+    private var hasFreshScrollRecognition = false
     private var interactionRefreshTask: Task<Void, Never>?
     private var needsTranslation = false
     private let hotKeys = GlobalHotKeyService()
@@ -69,8 +81,6 @@ final class AppModel {
     private var usedAppText = false
     private var generation = UUID()
     private var captureTask: Task<Void, Never>?
-    private var loopTask: Task<Void, Never>?
-    private var trackingTask: Task<Void, Never>?
     private var permissionAction = UUID()
     private var needsRefresh = false
     private var lastCaptureRect: CGRect?
@@ -78,6 +88,9 @@ final class AppModel {
     private(set) var windowsController: AppWindows?
 
     var hasTarget: Bool { target != nil }
+    var isRefreshMonitoringActive: Bool { monitoring.isRefreshing }
+    var isOverlayMonitoringActive: Bool { monitoring.isTrackingOverlay }
+    var isInputMonitoringActive: Bool { interactions.isRunning }
     var sourceText: String { blocks.map(\.source).joined(separator: "\n\n") }
     var translatedText: String { blocks.compactMap(\.translation).joined(separator: "\n\n") }
 
@@ -108,13 +121,22 @@ final class AppModel {
         guard windowsController == nil else { return }
         windowsController = AppWindows(model: self)
         updater.start()
-        imageOverlay.didInvalidate = { [weak self] in self?.windowsController?.overlay.clear() }
+        imageOverlay.didInvalidate = { [weak self] in
+            guard let self, !self.isScrolling else { return }
+            self.windowsController?.overlay.clear()
+        }
         imageOverlay.didRender = { [weak self] in self?.updateOverlay() }
-        capture.onFrame = { [weak self] frame in self?.imageOverlay.observe(frame) }
+        capture.onFrame = { [weak self] frame in
+            guard let self, self.hasTarget, !self.isPaused, !self.isSelecting else { return }
+            self.scrollActivity.observe(frame)
+            self.imageOverlay.observe(frame)
+        }
         capture.onPreview = { [weak self] surface in
-            guard let self, !self.isPaused, !self.isSelecting else { return }
+            guard let self, self.hasTarget, !self.isPaused, !self.isSelecting else { return }
             self.windowsController?.overlay.updateBackground(surface)
         }
+        scrollActivity.didStart = { [weak self] in self?.beginScroll() }
+        scrollActivity.didSettle = { [weak self] in self?.finishScroll() }
         imageOverlay.needsRecognition = { [weak self] in
             guard let self, self.settings.automaticRefresh else { return }
             self.requestRefresh()
@@ -132,7 +154,9 @@ final class AppModel {
             }
         }
         interactions.onInteraction = { [weak self] point in self?.refreshAfterInteraction(at: point) }
-        interactions.start()
+        interactions.onScroll = { [weak self] event in self?.refreshAfterInteraction(at: event.location, scroll: event) }
+        monitoring.onRefresh = { [weak self] in self?.requestRefresh() }
+        monitoring.onOverlayUpdate = { [weak self] in self?.updateOverlay() }
         hotKeys.onCapture = { [weak self] in self?.selectRegion() }
         hotKeys.onStop = { [weak self] in self?.stop() }
         translation.needsPresentation = { [weak self] in self?.showResults() }
@@ -144,31 +168,12 @@ final class AppModel {
         Task {
             if !(await capture.verifyAccess()) { windowsController?.showWelcome() }
         }
-        loopTask = Task { [weak self] in
-            while !Task.isCancelled {
-                let seconds = self?.settings.refreshInterval ?? 2
-                try? await Task.sleep(for: .seconds(seconds))
-                guard !Task.isCancelled, let self else { return }
-                if self.settings.automaticRefresh && !self.isPaused && !self.isSelecting && self.hasTarget {
-                    self.requestRefresh()
-                }
-            }
-        }
-        trackingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(100))
-                guard !Task.isCancelled, let self else { return }
-                self.updateOverlay()
-            }
-        }
+        updateRecognitionMonitoring()
     }
 
     func shutdown() {
         stop()
-        loopTask?.cancel()
-        trackingTask?.cancel()
         hotKeys.shutdown()
-        interactions.stop()
     }
 
     private func configureHotKeys() {
@@ -239,6 +244,7 @@ final class AppModel {
                     self.isSelecting = false
                     self.errorMessage = LineLensError.targetUnavailable.localizedDescription
                     self.showResults()
+                    if self.hasTarget { self.fingerprint = nil; self.requestRefresh() }
                     return
                 }
                 self.windowsController?.selection.begin(restrictingTo: frame) { [weak self] rect, _ in
@@ -336,11 +342,18 @@ final class AppModel {
     }
 
     private func cancelWork() {
+        monitoring.stop()
+        interactions.stop()
+        scrollActivity.reset()
+        isScrolling = false
+        isWaitingForScrollTranslation = false
+        hasFreshScrollRecognition = false
         capture.stopLiveCapture()
         interactionRefreshTask?.cancel()
         interactionRefreshTask = nil
         needsTranslation = false
         imageOverlay.reset()
+        windowsController?.overlay.clear()
         permissionAction = UUID()
         generation = UUID()
         captureTask?.cancel()
@@ -348,13 +361,76 @@ final class AppModel {
         isCapturing = false
         needsRefresh = false
         translation.cancel()
+        ocr = OCRService()
     }
 
-    private func refreshAfterInteraction(at point: CGPoint) {
+    func updateRecognitionMonitoring() {
+        let active = hasTarget && !isPaused && !isSelecting
+        let refresh = active && settings.automaticRefresh
+        let overlay = active && settings.translationEnabled && settings.presentation != .panel
+        monitoring.configure(refreshInterval: refresh ? settings.refreshInterval : nil,
+            overlayInterval: overlay ? 0.1 : nil)
+        if refresh { interactions.start() }
+        else { interactions.stop() }
+    }
+
+    private var fadesOnScroll: Bool {
+        settings.automaticRefresh && settings.translationEnabled && settings.presentation != .panel
+            && hasTarget && !isPaused && !isSelecting
+    }
+
+    func beginScroll() {
+        guard !isScrolling else { return }
+        isScrolling = true
+        isWaitingForScrollTranslation = true
+        hasFreshScrollRecognition = false
+        windowsController?.overlay.fadeOutAndDiscard()
+        // Keep continuous capture and the text-only translation cache. Everything
+        // tied to the previous screen (including the OCR/image caches) is dropped.
+        generation = UUID()
+        captureTask?.cancel()
+        captureTask = nil
+        interactionRefreshTask?.cancel()
+        interactionRefreshTask = nil
+        translation.cancel()
+        needsTranslation = false
+        needsRefresh = false
+        isCapturing = false
+        blocks = []
+        fingerprint = nil
+        usedAppText = false
+        lastCaptureRect = nil
+        imageOverlay.reset()
+        ocr = OCRService()
+    }
+
+    func finishScroll() {
+        guard isScrolling else { return }
+        isScrolling = false
+        // Full recognition uses the current capture. No pre-scroll coordinates or
+        // block identifiers are reconciled into this layout.
+        requestRefresh(force: true)
+    }
+
+    private func refreshAfterInteraction(at point: CGPoint, scroll: ScrollInteraction? = nil) {
+        if let scroll, fadesOnScroll, isScrolling {
+            // Momentum may continue after the pointer leaves the target bounds.
+            scrollActivity.note(scroll)
+            return
+        }
         guard settings.automaticRefresh, let target, !isSelecting, !isPaused,
               let rect = capture.visibleFrame(for: target) else { return }
         let screenPoint = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)
         guard rect.contains(screenPoint) else { return }
+        // Background windows may be scrolled without becoming active. Allow that
+        // when visible, but do not treat input on an overlapping app as this target's.
+        if case .window(_, let pid, _, _) = target,
+           NSWorkspace.shared.frontmostApplication?.processIdentifier != pid,
+           capture.isOccluded(target, rect: rect, overlayWindowID: windowsController?.overlay.window?.windowNumber) { return }
+        if let scroll, fadesOnScroll {
+            scrollActivity.note(scroll)
+            return
+        }
         interactionRefreshTask?.cancel()
         let token = generation
         interactionRefreshTask = Task { [weak self] in
@@ -365,7 +441,8 @@ final class AppModel {
     }
 
     func requestRefresh(force: Bool = false) {
-        guard let target, !isSelecting, !isPaused else { return }
+        guard let target, !isSelecting, !isPaused, !isScrolling else { return }
+        updateRecognitionMonitoring()
         if force { fingerprint = nil }
         if case .window = target, capture.availableFrame(for: target) == nil {
             status = "대상 창이 닫혔거나 최소화되어 있습니다. 다시 표시되면 인식을 계속합니다."
@@ -394,6 +471,12 @@ final class AppModel {
             }
             do {
                 let captured = try await self.capture.capture(target, continuously: self.settings.automaticRefresh || self.settings.presentation != .panel)
+                guard self.generation == token, !Task.isCancelled else { return }
+                // At a scroll boundary the pixels may not change, so ScreenCaptureKit
+                // may send no new complete frame. The current capture is still a
+                // valid input for fresh OCR after discarding the previous layout.
+                self.imageOverlay.observe(CapturedFrame(image: captured.image, fingerprint: captured.fingerprint,
+                    pixels: captured.pixels, sequence: captured.sequence))
                 let newBlocks: [TextBlock]?
                 let method: String
                 var appBlocks: [TextBlock]?
@@ -402,6 +485,8 @@ final class AppModel {
                    let frame = ScreenCaptureService.windowFrame(id: id) {
                     appBlocks = try await self.accessibleText.read(processID: processID, windowRect: frame, captureRect: captured.screenRect)
                 }
+                guard self.generation == token, !Task.isCancelled else { return }
+                let topInset = self.capture.overlayTopInset(for: target, rect: captured.screenRect)
                 if let appBlocks {
                     newBlocks = appBlocks
                     method = "앱 텍스트"
@@ -413,12 +498,12 @@ final class AppModel {
                 }
                 guard self.generation == token, !Task.isCancelled else { return }
                 let incoming = newBlocks ?? self.blocks
-                let topInset = self.capture.overlayTopInset(for: target, rect: captured.screenRect)
                 guard await self.imageOverlay.accept(captured, blocks: incoming, topInset: topInset),
                       self.generation == token else { return }
                 self.lastCaptureRect = captured.screenRect
                 self.fingerprint = captured.fingerprint
                 self.usedAppText = appBlocks != nil
+                if self.isWaitingForScrollTranslation { self.hasFreshScrollRecognition = true }
                 if self.errorMessage != nil { self.errorMessage = nil }
                 if let newBlocks {
                     let reconciled = TextSnapshot.reconcile(newBlocks, previous: self.blocks,
@@ -450,6 +535,7 @@ final class AppModel {
     }
 
     func translateCurrentBlocks(clearExisting: Bool = true) {
+        guard !isScrolling else { return }
         if clearExisting {
             translation.cancel()
             needsTranslation = false
@@ -493,24 +579,37 @@ final class AppModel {
     func updateOverlay() {
         guard let target, !isSelecting, !isPaused,
               let rect = capture.visibleFrame(for: target) else { windowsController?.overlay.hide(); return }
+        guard settings.presentation != .panel, settings.translationEnabled else {
+            windowsController?.overlay.hide()
+            return
+        }
+        // Do not interrupt fade-out or revive an old/partially translated layout.
+        guard !isScrolling else { return }
+        if isWaitingForScrollTranslation {
+            guard hasFreshScrollRecognition, blocks.allSatisfy({ $0.translation != nil }) else { return }
+        }
         let oldRect = lastVisibleRect
         lastVisibleRect = rect
         // Keep the last completed screen during resizing; the image scales with
         // its window until OCR and translation produce the new layout.
         let matchesCaptureSize = lastCaptureRect?.size == rect.size
         if !matchesCaptureSize, oldRect?.size != rect.size { fingerprint = nil; requestRefresh() }
-        guard settings.presentation != .panel, settings.translationEnabled else {
-            windowsController?.overlay.hide()
+        if matchesCaptureSize { imageOverlay.prepare(blocks: blocks, settings: settings) }
+        guard let presentation = imageOverlay.presentation else {
+            // Keep the emptied, transparent window during post-scroll rendering.
+            // The next result then appears through opacity alone, without a new
+            // native window ordering transition.
+            if !isWaitingForScrollTranslation { windowsController?.overlay.hide() }
             return
         }
-        if matchesCaptureSize { imageOverlay.prepare(blocks: blocks, settings: settings) }
-        guard let presentation = imageOverlay.presentation else { windowsController?.overlay.hide(); return }
         let topInset = capture.overlayTopInset(for: target, rect: rect)
         let contentRect = CGRect(x: rect.minX, y: rect.minY + topInset, width: rect.width, height: max(0, rect.height - topInset))
         guard !capture.isOccluded(target, rect: contentRect, overlayWindowID: windowsController?.overlay.window?.windowNumber) else { windowsController?.overlay.hide(); return }
         windowsController?.overlay.show(rect: rect, presentation: presentation,
             livePreview: settings.livePreview && settings.automaticRefresh,
-            level: capture.overlayLevel(for: target), topInset: topInset)
+            level: capture.overlayLevel(for: target), topInset: topInset, fadeIn: isWaitingForScrollTranslation)
+        isWaitingForScrollTranslation = false
+        hasFreshScrollRecognition = false
     }
 
     func ensurePermission() async -> Bool {

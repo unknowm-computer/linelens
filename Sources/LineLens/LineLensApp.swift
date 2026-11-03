@@ -46,7 +46,8 @@ private struct MenuContent: View {
 
     var body: some View {
         Text("LineLens")
-        Text(model.isSelecting ? "대상 선택 중" : model.target?.title ?? "인식 대상 없음")
+        Text(compactTargetTitle)
+            .help(targetTitle)
         Divider()
         Button("화면 영역 선택\(shortcutLabel)") { model.selectRegion() }
         Button("프로그램 창 직접 선택…") { model.chooseWindow() }
@@ -73,4 +74,24 @@ private struct MenuContent: View {
     }
 
     private var shortcutLabel: String { model.settings.captureShortcut.map { "  \($0.label)" } ?? "" }
+
+    private var targetTitle: String {
+        model.isSelecting ? "대상 선택 중" : model.target?.title ?? "인식 대상 없음"
+    }
+
+    private var compactTargetTitle: String {
+        // Native menu items use the Text's string rather than SwiftUI's frame
+        // constraints. Shorten the actual label before passing it to the menu.
+        let title = targetTitle.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.menuFont(ofSize: 0)]
+        let maximumWidth: CGFloat = 320
+        guard (title as NSString).size(withAttributes: attributes).width > maximumWidth else { return title }
+        var prefix = ""
+        for character in title {
+            let next = prefix + String(character)
+            guard ((next + "…") as NSString).size(withAttributes: attributes).width <= maximumWidth else { break }
+            prefix = next
+        }
+        return prefix + "…"
+    }
 }
