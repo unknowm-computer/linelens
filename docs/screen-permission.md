@@ -79,6 +79,10 @@ open "dist/development/LineLens Dev.app"
 
 ## 앱 교체와 배포 검증
 
+`release` + `distribution` 빌드는 조립 중인 실행 파일에 `strip -S -x`를 적용해 디버그 기록·로컬 심벌 이름을 정리하고, 복사한 Sparkle.framework의 `Headers`·`PrivateHeaders`·`Modules`와 해당 상위 심볼릭 링크를 제외한다. 실행에 필요한 외부 심벌·Swift 메타데이터와 Sparkle 런타임·업데이트 도우미는 유지한다. 정리 후 중첩 코드부터 앱까지 다시 서명·검증하므로 서명 완료된 앱을 직접 수정하지 않는다.
+
+이 정리는 `debug` 또는 `--signing development`에는 적용하지 않는다. `.build/artifacts`의 원본 SDK·헤더와 SwiftPM 빌드 결과도 수정하지 않아 이후 컴파일·디버깅에 사용할 수 있다.
+
 빌드 스크립트는 별도 디렉터리에서 앱을 조립·서명·검증한 뒤 교체한다. 변경된 앱을 교체할 때 해당 경로의 기존 프로세스를 종료한다. 서명을 제외한 결과가 같으면 기존 번들과 실행 프로세스를 보존한다. 실행 파일의 `__TEXT,__info_plist`에도 최종 메타데이터를 반영한다.
 
 배포 ZIP은 Apple Silicon·Intel 통합 앱과 설치 안내를 포함한다. 버전·빌드 번호, 모든 아키텍처의 서명, 이전 앱의 DR 충족과 ZIP 압축 해제 후 내용을 검사한다. 업데이트 ZIP·피드의 EdDSA 서명은 코드 서명과 다른 키다. 생성·검증·게시 명령은 [Sparkle 배포 문서](sparkle-updates.md)를 따른다.

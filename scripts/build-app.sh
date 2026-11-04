@@ -163,6 +163,16 @@ framework="$staged_app/Contents/Frameworks/Sparkle.framework"
 mkdir -p "$staged_app/Contents/Frameworks"
 ditto "$framework_source" "$framework"
 rm -rf "$framework/Versions/B/XPCServices" "$framework/XPCServices"
+if [[ "$configuration" == "release" && "$signing_mode" == "distribution" ]]; then
+    # Change only the staged payload, before any final signatures are created.
+    # Keep exported/runtime symbols and Swift reflection metadata; remove debug
+    # records and local symbol names from the host executable.
+    xcrun strip -S -x "$staged_app/Contents/MacOS/LineLens"
+    # The runtime framework and update helpers do not need SDK headers/modules.
+    # Remove both versioned directories and their top-level framework aliases.
+    rm -rf "$framework/Headers" "$framework/PrivateHeaders" "$framework/Modules" \
+        "$framework/Versions/B/Headers" "$framework/Versions/B/PrivateHeaders" "$framework/Versions/B/Modules"
+fi
 # This project's self-signed certificate has no Apple Team ID. Use the same
 # non-hardened signing mode as the host instead of enabling Library Validation.
 for nested_code in "$framework/Versions/B/Autoupdate" "$framework/Versions/B/Updater.app" "$framework"; do
