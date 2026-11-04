@@ -7,6 +7,7 @@ struct ResultsView: View {
     @State private var editingBlock: TextBlock?
     @State private var editedText = ""
     @State private var isChoosingLanguage = false
+    @State private var isChoosingRecognition = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -117,7 +118,19 @@ struct ResultsView: View {
                 Toggle("자동 번역", isOn: $model.settings.translationEnabled)
                     .toggleStyle(.switch).controlSize(.small)
                 Spacer()
-                Button("언어", systemImage: "globe") { isChoosingLanguage = true }
+                Button("텍스트 읽기", systemImage: "text.magnifyingglass") {
+                    isChoosingLanguage = false
+                    isChoosingRecognition = true
+                }
+                .help("현재 인식의 텍스트 읽기 선택 · \(model.recognitionSettings.recognitionSource.title)")
+                .accessibilityLabel("현재 인식의 텍스트 읽기 설정")
+                .popover(isPresented: $isChoosingRecognition, arrowEdge: .bottom) {
+                    ResultRecognitionSettingsView(model: model)
+                }
+                Button("언어", systemImage: "globe") {
+                    isChoosingRecognition = false
+                    isChoosingLanguage = true
+                }
                     .help("인식 언어와 번역 목표 언어 선택")
                     .accessibilityLabel("인식 및 번역 언어 설정")
                     .popover(isPresented: $isChoosingLanguage, arrowEdge: .bottom) {

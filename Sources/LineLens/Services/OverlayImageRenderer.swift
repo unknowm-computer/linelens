@@ -21,16 +21,34 @@ actor OverlayImageRenderer {
         let fontSize: Double
     }
     private var patchCache: [PatchKey: CGImage] = [:]
+    private var completedText: (pixels: ImagePixels, blocks: [TextBlock])?
     private(set) var renderedPatchCount = 0
     private(set) var cacheHitCount = 0
 
-    func renderPatches(image: CGImage, pointSize: CGSize, blocks: [TextBlock], style: OverlayStyle) throws -> [OverlayPatch] {
+    func renderPatches(image: CGImage, pointSize: CGSize, blocks: [TextBlock], style: OverlayStyle, pixels: ImagePixels? = nil) throws -> [OverlayPatch] {
         var patches: [OverlayPatch] = []
         let pixelBounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
         let bounds = CGRect(origin: .zero, size: pointSize)
         guard pointSize.width > 0, pointSize.height > 0 else { return [] }
+        let sourcePixels = pixels ?? ImagePixels(image)
+        var displayed = blocks
+        if let completedText, let sourcePixels {
+            for index in displayed.indices where displayed[index].translation == nil {
+                if let old = completedText.blocks.first(where: {
+                    $0.translation != nil && $0.rect.intersects(displayed[index].rect)
+                        && OCRTextStability.preservesGlyphs($0, before: completedText.pixels, after: sourcePixels)
+                }) {
+                    // A caret can be read as an appended character. Keep the
+                    // confirmed translation while that candidate is translated.
+                    displayed[index].translation = old.translation
+                }
+            }
+        }
+        if blocks.allSatisfy({ $0.translation != nil }), let sourcePixels {
+            completedText = (sourcePixels, blocks)
+        }
         let sx = pixelBounds.width / pointSize.width, sy = pixelBounds.height / pointSize.height
-        for block in blocks {
+        for block in displayed {
             try Task.checkCancellation()
             let translated = block.translation?.trimmingCharacters(in: .whitespacesAndNewlines)
             let text = translated.flatMap { $0.isEmpty ? nil : $0 } ?? (style == .cover ? "…" : "")

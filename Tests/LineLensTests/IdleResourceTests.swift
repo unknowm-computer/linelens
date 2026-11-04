@@ -62,4 +62,20 @@ final class IdleResourceTests: XCTestCase {
     }
 
     private enum TestError: Error { case unavailable }
+
+    @MainActor
+    func testDevelopmentAppCannotStartDistributionUpdates() {
+        var initializations = 0
+        let updater = AppUpdater(isBundledApp: true, isDevelopmentBuild: true, automaticChecks: { true }, makeController: {
+            initializations += 1
+            throw TestError.unavailable
+        })
+        updater.start()
+        updater.checkForUpdates()
+        updater.setChecksAutomatically(true)
+        XCTAssertEqual(initializations, 0)
+        XCTAssertFalse(updater.canCheckForUpdates)
+        XCTAssertFalse(updater.checksAutomatically)
+        XCTAssertNil(updater.startupError)
+    }
 }

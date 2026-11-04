@@ -7,6 +7,20 @@ struct ImagePixels: Sendable {
     let height: Int
     let bytes: [UInt8]
 
+    init(width: Int, height: Int, bytes: [UInt8]) {
+        self.width = width
+        self.height = height
+        self.bytes = bytes
+    }
+
+    func makeImage() -> CGImage? {
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
     init?(_ image: CGImage) {
         let width = image.width
         let height = image.height

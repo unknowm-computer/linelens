@@ -1,6 +1,6 @@
 # 설치·자동 실행·권한·빌드 서명
 
-기준일: 2026-11-03. 사용자의 설치·권한 안내와 개발 Mac의 서명 운영 절차를 정리한다.
+기준일: 2026-11-04. 사용자의 설치·권한 안내와 개발 Mac의 서명 운영 절차를 정리한다.
 
 ## 설치받는 사용자
 
@@ -44,16 +44,29 @@
 ./scripts/reset-screen-permission.sh --relaunch
 ```
 
-초기화 대상은 `ScreenCapture`와 `com.linelens.app`뿐이다. 다른 앱·접근성·마이크 권한은 변경하지 않는다. 초기화는 승인을 대신하지 않으며, 재실행 전 추가 조회를 막아 오래된 거부 상태가 다시 저장되는 것을 피한다. 정상 업데이트의 정기 절차로 사용하지 않는다.
+배포 앱의 초기화 대상은 `ScreenCapture`와 `com.linelens.app`뿐이다. 개발 앱은 아래의 별도 식별자를 사용한다. 다른 앱·접근성·마이크 권한은 변경하지 않는다. 초기화는 승인을 대신하지 않으며, 재실행 전 추가 조회를 막아 오래된 거부 상태가 다시 저장되는 것을 피한다. 정상 업데이트의 정기 절차로 사용하지 않는다.
 
-## 개발 Mac의 고정 코드 서명
+## 다른 Mac에서 키 없이 개발하기
+
+```sh
+./scripts/build-app.sh debug
+open "dist/development/LineLens Dev.app"
+```
+
+`debug`는 개발 모드가 기본이다. 최적화가 필요한 개발 테스트에는 `./scripts/build-app.sh release --signing development`를 사용한다. Xcode 선택이 필요하면 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`를 명령 앞에 지정한다.
+
+개발 모드는 인증서·개인 키·배포 키체인을 열지 않고 임시 서명(`ad-hoc`)을 사용한다. 이름은 `LineLens Dev`, Bundle ID는 `com.linelens.app.dev`, 기본 출력은 `dist/development/LineLens Dev.app`이다. 설정과 시스템 권한이 배포 앱과 구분되며, 앱 내 화면 기록 복구는 실행 중인 앱의 Bundle ID만 초기화한다. 기존 `reset-screen-permission.sh`는 배포 앱용이다.
+
+개발 앱에는 화면 기록·접근성을 별도로 승인해야 한다. 임시 서명은 코드가 바뀌면 서명 요구조건도 바뀌므로 재빌드 뒤 권한 재승인이 필요할 수 있다. 개발 앱은 Sparkle를 시작하지 않으며 배포 업데이트를 설치하지 않는다.
+
+## 배포용 고정 코드 서명
 
 ```sh
 ./scripts/setup-local-signing.sh
 ./scripts/build-app.sh release
 ```
 
-프로젝트의 Bundle ID·공개 인증서 지문은 `Resources/SigningIdentity.plist`에 고정한다. 기존 개인 키를 보유한 서명 Mac의 설정을 재사용한다. 개인 키가 없는 다른 Mac에서 새 인증서를 만들어 대체하지 않는다.
+`release`는 배포 모드가 기본이며, `--signing distribution`으로 명시할 수도 있다. 배포 앱은 `dist/LineLens.app`에 생성한다. 프로젝트의 Bundle ID·공개 인증서 지문은 `Resources/SigningIdentity.plist`에 고정한다. 기존 개인 키를 보유한 서명 Mac의 설정을 재사용한다. 개인 키가 없는 다른 Mac에서 새 인증서를 만들어 대체하지 않는다.
 
 - 전용 저장 위치는 `~/Library/Application Support/LineLens/Signing`이며 Git·배포 ZIP에 포함하지 않는다. 디렉터리 권한은 `700`, 비밀번호 등 파일은 `600`이다.
 - `LineLens Local Development` 자체 서명 인증서와 RSA 3072비트 키를 사용한다. 인증서 유효기간은 10년이며 개인 키는 전용 `LineLens.keychain-db`에 내보내기 불가로 보관한다. 생성 중의 PEM·PKCS#12는 정리한다.
@@ -84,6 +97,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./scripts/build-app.sh 
 아이콘은 AppKit 벡터 경로로 생성한다. 위 명령은 재생성 절차이며 일반 설치·실행에 필요하지 않다.
 
 ## 검증 범위
+
+2026-11-04에는 테스트 96개(앱 72개·코어 24개), 개인 키를 사용하지 않는 개발용 Debug 빌드·통합 Release 빌드, 변경 없는 개발 앱의 재빌드 보존을 확인했다. 배포용 Release 빌드의 고정 서명과 임시 서명 거부도 검사했다. 검증 과정에서 기존 `dist/LineLens.app`의 실행 파일·메타데이터와 수정 시각이 보존되는 것을 확인했다. 다른 Mac에서의 실제 실행·권한 승인은 별도 확인 대상이다.
 
 기존 Mac에서 같은 서명의 개발·릴리스 교체와 ZIP 설치 후 화면 기록 유지, 변경 없는 빌드 보존, 잘못된 서명·빌드 번호 거부를 확인했다. 로그인 항목 등록·해제·재실행 후 유지와 아이콘 표시도 확인했다. 실제 로그아웃·재부팅, 다른 Mac의 승인 유지, Intel 하드웨어 실행과 공개 서버의 업데이트는 추가 확인 대상이다. 세부 기록은 [테스트 문서](manual-testing.md)를 따른다.
 

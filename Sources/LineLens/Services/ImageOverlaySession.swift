@@ -12,7 +12,8 @@ struct OverlayPresentation {
 @MainActor
 final class ImageOverlaySession {
     private var renderer = OverlayImageRenderer()
-    private var matcher = OverlayFrameMatcher()
+    private var matcher: OverlayFrameMatcher
+    private(set) var stabilizer: OCRFrameStabilizer
     private var state = OverlayFrameState()
     private var source: CapturedImage?
     private var sourceBlocks: [TextBlock] = []
@@ -36,6 +37,11 @@ final class ImageOverlaySession {
     var didInvalidate: (() -> Void)?
     var needsRecognition: (() -> Void)?
 
+    init(stabilizer: OCRFrameStabilizer = OCRFrameStabilizer()) {
+        self.stabilizer = stabilizer
+        matcher = OverlayFrameMatcher(stabilizer: stabilizer)
+    }
+
     private struct RenderKey: Equatable {
         let revision: UUID
         let blocks: [TextBlock]
@@ -51,14 +57,14 @@ final class ImageOverlaySession {
         }
         latestFrame = frame
         validationTask?.cancel()
-        guard let source else {
-            state.observe(frame.fingerprint)
-            return
-        }
+        let source = source
+        if source == nil { state.observe(frame.fingerprint) }
         let token = lifetime
         let revision = state.revision
-        let regions = comparisonRegions(sourceBlocks, size: source.screenRect.size, topInset: sourceTopInset)
-        validationTask = Task { [weak self, matcher] in
+        let regions = source.map { comparisonRegions(sourceBlocks, size: $0.screenRect.size, topInset: sourceTopInset) } ?? []
+        validationTask = Task { [weak self, matcher, stabilizer] in
+            await stabilizer.observe(frame)
+            guard !Task.isCancelled, let source else { return }
             let matches = (try? await matcher.matches(frame.image, baseline: source.image, regions: regions,
                 pixels: frame.pixels, sourcePixels: source.pixels)) ?? false
             guard !Task.isCancelled, let self, self.lifetime == token, self.state.revision == revision,
@@ -76,13 +82,22 @@ final class ImageOverlaySession {
     /// pixels still match. Scrolled/edited text and results from an old target are rejected.
     @discardableResult
     func accept(_ captured: CapturedImage, blocks: [TextBlock], topInset: CGFloat = 0) async -> Bool {
-        guard let current = latestFrame else { return false }
         let token = lifetime
-        let matches = (try? await matcher.matches(current.image, baseline: captured.image,
-            regions: comparisonRegions(blocks, size: captured.screenRect.size, topInset: topInset),
-            pixels: current.pixels, sourcePixels: captured.pixels)) ?? false
-        guard !Task.isCancelled, lifetime == token,
-              latestFrame?.fingerprint == current.fingerprint, matches else { return false }
+        await stabilizer.track(blocks, pixelSize: CGSize(width: captured.image.width, height: captured.image.height))
+        var accepted = false
+        // Compare against the newest text pixels instead of requiring the entire
+        // screenshot to stay byte-identical across an actor hop.
+        for _ in 0..<3 {
+            guard !Task.isCancelled, lifetime == token, let current = latestFrame else { return false }
+            let matches = (try? await matcher.matches(current.image, baseline: captured.image,
+                regions: comparisonRegions(blocks, size: captured.screenRect.size, topInset: topInset),
+                pixels: current.pixels, sourcePixels: captured.pixels)) ?? false
+            guard !Task.isCancelled, lifetime == token else { return false }
+            if latestFrame?.fingerprint != current.fingerprint { continue }
+            accepted = matches
+            break
+        }
+        guard accepted else { return false }
         validationTask?.cancel()
         validationTask = nil
         state.observe(captured.fingerprint)
@@ -106,7 +121,7 @@ final class ImageOverlaySession {
         task?.cancel()
         requested = key
         task = Task { [weak self, renderer] in
-            let result = try? await renderer.renderPatches(image: source.image, pointSize: key.pointSize, blocks: blocks, style: key.style)
+            let result = try? await renderer.renderPatches(image: source.image, pointSize: key.pointSize, blocks: blocks, style: key.style, pixels: source.pixels)
             guard !Task.isCancelled, let self, self.requested == key, self.state.revision == key.revision,
                   self.state.canPresent else { return }
             if let result {
@@ -136,7 +151,8 @@ final class ImageOverlaySession {
         // A new screen must not reuse images or comparison pixels belonging to
         // a pre-scroll layout. TranslationEngine's text-only cache is separate.
         renderer = OverlayImageRenderer()
-        matcher = OverlayFrameMatcher()
+        stabilizer = OCRFrameStabilizer()
+        matcher = OverlayFrameMatcher(stabilizer: stabilizer)
     }
 
     private func comparisonRegions(_ blocks: [TextBlock], size: CGSize, topInset: CGFloat) -> [CGRect] {

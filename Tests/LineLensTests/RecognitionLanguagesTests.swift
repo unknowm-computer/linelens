@@ -22,7 +22,7 @@ final class RecognitionLanguagesTests: XCTestCase {
     }
 
     @MainActor
-    func testUnifiedSelectionUpdatesBothSettingsAndWaitsForFreshRecognition() {
+    func testUnifiedSelectionUpdatesSessionLanguagesAndWaitsForFreshRecognition() {
         let original = AppSettings.load()
         defer { original.save() }
         let model = AppModel()
@@ -35,15 +35,16 @@ final class RecognitionLanguagesTests: XCTestCase {
         block.translation = "이전 번역"
         model.blocks = [block]
         model.setRecognitionLanguage("ja")
-        XCTAssertEqual(model.settings.ocrLanguage, "ja-JP")
-        XCTAssertEqual(model.settings.sourceLanguage, "ja")
+        XCTAssertEqual(model.recognitionSettings.ocrLanguage, "ja-JP")
+        XCTAssertEqual(model.recognitionSettings.sourceLanguage, "ja")
+        XCTAssertEqual(model.settings, AppSettings(), "Result choices must not alter persisted defaults")
         XCTAssertEqual(model.settings.targetLanguage, "ko")
         XCTAssertEqual(model.recognitionLanguage, "ja")
         XCTAssertNil(model.blocks[0].translation)
         XCTAssertFalse(model.translation.isWorking, "Do not translate old OCR text under the new source language")
         model.setRecognitionLanguage("auto")
-        XCTAssertEqual(model.settings.ocrLanguage, "auto")
-        XCTAssertEqual(model.settings.sourceLanguage, "auto")
+        XCTAssertEqual(model.recognitionSettings.ocrLanguage, "auto")
+        XCTAssertEqual(model.recognitionSettings.sourceLanguage, "auto")
         XCTAssertEqual(model.recognitionLanguage, "auto")
     }
 
@@ -63,7 +64,8 @@ final class RecognitionLanguagesTests: XCTestCase {
         model.setRecognitionLanguage("unknown")
         XCTAssertEqual(model.settings, settings)
         model.setRecognitionLanguage("en")
-        XCTAssertEqual(model.settings.ocrLanguage, "en-US")
-        XCTAssertEqual(model.settings.sourceLanguage, "en")
+        XCTAssertEqual(model.recognitionSettings.ocrLanguage, "en-US")
+        XCTAssertEqual(model.recognitionSettings.sourceLanguage, "en")
+        XCTAssertEqual(model.settings, settings)
     }
 }

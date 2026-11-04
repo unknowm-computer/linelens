@@ -103,10 +103,14 @@ final class ScreenCaptureService {
     }
 
     private nonisolated static func resetSystemPermission() async throws {
+        guard let bundleIdentifier = Bundle.main.bundleIdentifier, !bundleIdentifier.isEmpty else {
+            throw NSError(domain: "LineLens.PermissionReset", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "현재 앱의 식별자를 확인할 수 없습니다."])
+        }
         try await Task.detached(priority: .userInitiated) {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-            process.arguments = ["reset", "ScreenCapture", "com.linelens.app"]
+            process.arguments = ["reset", "ScreenCapture", bundleIdentifier]
             let errors = Pipe()
             process.standardError = errors
             process.standardOutput = FileHandle.nullDevice

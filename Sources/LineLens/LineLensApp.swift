@@ -45,7 +45,7 @@ private struct MenuContent: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        Text("LineLens")
+        Text(Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "LineLens")
         Text(compactTargetTitle)
             .help(targetTitle)
         Divider()

@@ -9,42 +9,11 @@ final class AppModel {
         didSet {
             settings.save()
             guard settings != oldValue else { return }
-            if settings.captureShortcut != oldValue.captureShortcut || settings.stopShortcut != oldValue.stopShortcut {
-                configureHotKeys()
-            }
-            windowsController?.updateResultLevel()
-            if settings.presentation != oldValue.presentation {
-                if settings.presentation == .overlay { windowsController?.hideResults() }
-                else { showResults() }
-            }
-            if settings.ocrLanguage != oldValue.ocrLanguage || settings.ocrMode != oldValue.ocrMode
-                || settings.recognitionSource != oldValue.recognitionSource {
-                cancelWork()
-                fingerprint = nil
-                requestRefresh()
-            }
-            if settings.automaticRefresh != oldValue.automaticRefresh || settings.presentation != oldValue.presentation {
-                cancelWork()
-                if hasTarget { requestRefresh() }
-            }
-            if settings.livePreview != oldValue.livePreview {
-                cancelWork()
-                fingerprint = nil
-                if hasTarget { requestRefresh() }
-            }
-            if settings.translationEnabled != oldValue.translationEnabled
-                || settings.sourceLanguage != oldValue.sourceLanguage || settings.targetLanguage != oldValue.targetLanguage
-                || settings.translationQuality != oldValue.translationQuality {
-                if settings.ocrLanguage != oldValue.ocrLanguage, hasTarget, !isPaused, !isSelecting {
-                    // A combined language change needs fresh OCR before translating.
-                    // Do not submit the previous language's text under the new source language.
-                    for index in blocks.indices { blocks[index].translation = nil }
-                } else { translateCurrentBlocks() }
-            }
-            updateOverlay()
-            updateRecognitionMonitoring()
+            applyConfigurationChanges(from: resultOptions.applying(to: oldValue))
         }
     }
+    private(set) var resultOptions = ResultRecognitionOptions()
+    var recognitionSettings: AppSettings { resultOptions.applying(to: settings) }
     var target: CaptureTarget?
     var blocks: [TextBlock] = []
     var isSelecting = false
@@ -60,9 +29,9 @@ final class AppModel {
     let accessibility = AccessibilityAccess()
     let updater = AppUpdater()
     let launchAtLogin = LaunchAtLoginService()
-    private var ocr = OCRService()
+    private var ocr: OCRService
     private let accessibleText = AccessibilityTextService()
-    private let imageOverlay = ImageOverlaySession()
+    private let imageOverlay: ImageOverlaySession
     private let interactions = OverlayInteractionMonitor()
     private let monitoring = RecognitionMonitoringController()
     private let scrollActivity = ScrollActivityController()
@@ -86,6 +55,12 @@ final class AppModel {
     private var lastVisibleRect: CGRect?
     private(set) var windowsController: AppWindows?
 
+    init() {
+        let stabilizer = OCRFrameStabilizer()
+        ocr = OCRService(stabilizer: stabilizer)
+        imageOverlay = ImageOverlaySession(stabilizer: stabilizer)
+    }
+
     var hasTarget: Bool { target != nil }
     var isRefreshMonitoringActive: Bool { monitoring.isRefreshing }
     var isOverlayMonitoringActive: Bool { monitoring.isTrackingOverlay }
@@ -98,22 +73,78 @@ final class AppModel {
     }
 
     var recognitionLanguage: String {
-        RecognitionLanguages.selection(ocrLanguage: settings.ocrLanguage, sourceLanguage: settings.sourceLanguage,
+        RecognitionLanguages.selection(ocrLanguage: recognitionSettings.ocrLanguage, sourceLanguage: recognitionSettings.sourceLanguage,
             options: recognitionLanguages)
     }
 
     func setRecognitionLanguage(_ identifier: String) {
-        var next = settings
+        var next = resultOptions
         if identifier == "auto" {
-            next.ocrLanguage = "auto"
-            next.sourceLanguage = "auto"
+            next.recognitionLanguage = RecognitionLanguages.Option(id: "auto", ocrLanguage: "auto")
         } else {
             guard let option = recognitionLanguages.first(where: { $0.id == identifier }) else { return }
-            next.ocrLanguage = option.ocrLanguage
-            next.sourceLanguage = option.id
+            next.recognitionLanguage = option
         }
         // Apply both values together so capture and translation restart only once.
-        settings = next
+        setResultOptions(next)
+    }
+
+    func setResultRecognitionSource(_ source: TextRecognitionSource?) {
+        var next = resultOptions
+        next.recognitionSource = source
+        setResultOptions(next)
+    }
+
+    func setResultTargetLanguage(_ identifier: String) {
+        guard !identifier.isEmpty else { return }
+        var next = resultOptions
+        next.targetLanguage = identifier
+        setResultOptions(next)
+    }
+
+    func resetResultLanguages() {
+        var next = resultOptions
+        next.recognitionLanguage = nil
+        next.targetLanguage = nil
+        setResultOptions(next)
+    }
+
+    private func setResultOptions(_ next: ResultRecognitionOptions) {
+        guard resultOptions != next else { return }
+        let previous = recognitionSettings
+        resultOptions = next
+        applyConfigurationChanges(from: previous)
+    }
+
+    private func applyConfigurationChanges(from previous: AppSettings) {
+        let current = recognitionSettings
+        guard current != previous else { return }
+        if current.captureShortcut != previous.captureShortcut || current.stopShortcut != previous.stopShortcut {
+            configureHotKeys()
+        }
+        windowsController?.updateResultLevel()
+        if current.presentation != previous.presentation {
+            if current.presentation == .overlay { windowsController?.hideResults() }
+            else { showResults() }
+        }
+        let recognitionChanged = current.ocrLanguage != previous.ocrLanguage || current.ocrMode != previous.ocrMode
+            || current.recognitionSource != previous.recognitionSource
+        if recognitionChanged || current.automaticRefresh != previous.automaticRefresh
+            || current.presentation != previous.presentation || current.livePreview != previous.livePreview {
+            cancelWork()
+            fingerprint = nil
+            if hasTarget { requestRefresh() }
+        }
+        if current.translationEnabled != previous.translationEnabled
+            || current.sourceLanguage != previous.sourceLanguage || current.targetLanguage != previous.targetLanguage
+            || current.translationQuality != previous.translationQuality {
+            if current.ocrLanguage != previous.ocrLanguage, hasTarget, !isPaused, !isSelecting {
+                // Wait for fresh OCR before translating under the new language.
+                for index in blocks.indices { blocks[index].translation = nil }
+            } else { translateCurrentBlocks() }
+        }
+        updateOverlay()
+        updateRecognitionMonitoring()
     }
 
     func start() {
@@ -344,6 +375,7 @@ final class AppModel {
     func stop() {
         cancelWork()
         target = nil
+        resultOptions = ResultRecognitionOptions()
         blocks = []
         isPaused = false
         isSelecting = false
@@ -386,7 +418,7 @@ final class AppModel {
         isCapturing = false
         needsRefresh = false
         translation.cancel()
-        ocr = OCRService()
+        ocr = OCRService(stabilizer: imageOverlay.stabilizer)
     }
 
     func updateRecognitionMonitoring() {
@@ -426,7 +458,7 @@ final class AppModel {
         usedAppText = false
         lastCaptureRect = nil
         imageOverlay.reset()
-        ocr = OCRService()
+        ocr = OCRService(stabilizer: imageOverlay.stabilizer)
     }
 
     func finishScroll() {
@@ -476,9 +508,9 @@ final class AppModel {
         }
         guard captureTask == nil else { needsRefresh = true; return }
         let token = generation
-        let language = settings.ocrLanguage
+        let language = recognitionSettings.ocrLanguage
         let mode = settings.ocrMode
-        let recognitionSource = settings.recognitionSource
+        let recognitionSource = recognitionSettings.recognitionSource
         let previous = fingerprint
         // Background checks stay silent. Show progress for the first capture or an explicit refresh.
         isCapturing = force || lastCaptureRect == nil
@@ -503,6 +535,7 @@ final class AppModel {
                 self.imageOverlay.observe(CapturedFrame(image: captured.image, fingerprint: captured.fingerprint,
                     pixels: captured.pixels, sequence: captured.sequence))
                 let newBlocks: [TextBlock]?
+                var recognizedFingerprint = captured.fingerprint
                 let method: String
                 var appBlocks: [TextBlock]?
                 if recognitionSource == .automatic,
@@ -517,8 +550,9 @@ final class AppModel {
                     method = "앱 텍스트"
                 } else {
                     let result = try await self.ocr.recognize(captured.image, language: language, previousFingerprint: self.usedAppText ? nil : previous,
-                        fingerprint: captured.fingerprint, mode: mode, pixels: captured.pixels)
+                        fingerprint: captured.fingerprint, mode: mode, pixels: captured.pixels, sequence: captured.sequence)
                     newBlocks = result.blocks
+                    recognizedFingerprint = result.fingerprint
                     method = result.effectiveMode == .fast ? "빠른 OCR" : "정확한 OCR"
                 }
                 guard self.generation == token, !Task.isCancelled else { return }
@@ -526,7 +560,7 @@ final class AppModel {
                 guard await self.imageOverlay.accept(captured, blocks: incoming, topInset: topInset),
                       self.generation == token else { return }
                 self.lastCaptureRect = captured.screenRect
-                self.fingerprint = captured.fingerprint
+                self.fingerprint = recognizedFingerprint
                 self.usedAppText = appBlocks != nil
                 if self.isWaitingForScrollTranslation { self.hasFreshScrollRecognition = true }
                 if self.errorMessage != nil { self.errorMessage = nil }
@@ -583,7 +617,7 @@ final class AppModel {
         }
         needsTranslation = false
         let token = generation
-        translation.submit(blocks: pending, settings: settings, sourceContext: sourceText) { [weak self] values in
+        translation.submit(blocks: pending, settings: recognitionSettings, sourceContext: sourceText) { [weak self] values in
             guard let self, self.generation == token else { return }
             var translated = self.blocks
             for index in translated.indices {

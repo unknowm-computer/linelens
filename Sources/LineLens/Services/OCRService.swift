@@ -4,6 +4,7 @@ import LineLensCore
 import Vision
 
 actor OCRService {
+    typealias LineRecognizer = @Sendable (CGImage, String, OCRMode) throws -> [TextLine]
     struct Result: Sendable {
         let fingerprint: UInt64
         let blocks: [TextBlock]?
@@ -17,16 +18,29 @@ actor OCRService {
     private var previousMode: OCRMode?
     private var cachedFingerprint: UInt64?
     private var lastEffectiveMode: OCRMode = .accurate
+    private let stabilizer: OCRFrameStabilizer
+    private let recognizer: LineRecognizer?
+
+    init(stabilizer: OCRFrameStabilizer = OCRFrameStabilizer(), recognizer: LineRecognizer? = nil) {
+        self.stabilizer = stabilizer
+        self.recognizer = recognizer
+    }
 
     func supportedLanguages() throws -> [String] {
         try VNRecognizeTextRequest().supportedRecognitionLanguages().sorted()
     }
 
     func recognize(_ image: CGImage, language: String, previousFingerprint: UInt64?, fingerprint knownFingerprint: UInt64? = nil,
-                   mode: OCRMode = .accurate, pixels knownPixels: ImagePixels? = nil) throws -> Result {
+                   mode: OCRMode = .accurate, pixels knownPixels: ImagePixels? = nil, sequence: UInt64 = 0) async throws -> Result {
         try Task.checkCancellation()
-        let pixels = knownPixels ?? ImagePixels(image)
-        let fingerprint = knownFingerprint ?? pixels?.fingerprint ?? ImageFingerprint.make(image)
+        let rawPixels = knownPixels ?? ImagePixels(image)
+        let rawFingerprint = knownFingerprint ?? rawPixels?.fingerprint ?? ImageFingerprint.make(image)
+        await stabilizer.observe(CapturedFrame(image: image, fingerprint: rawFingerprint, pixels: rawPixels, sequence: sequence))
+        let normalized = await stabilizer.normalized(image, pixels: rawPixels)
+        try Task.checkCancellation()
+        let fingerprint = normalized.image === image ? rawFingerprint : normalized.pixels?.fingerprint ?? ImageFingerprint.make(normalized.image)
+        let image = normalized.image
+        let pixels = normalized.pixels
         let configurationMatches = previousLanguage == language && previousMode == mode
         if fingerprint == previousFingerprint && fingerprint == cachedFingerprint && configurationMatches {
             return Result(fingerprint: fingerprint, blocks: nil, processedRegions: [], effectiveMode: lastEffectiveMode)
@@ -68,7 +82,12 @@ actor OCRService {
             replacement += TextLayout.paragraphs(from: mapped)
         }
         let kept = previousBlocks.filter { block in !regions.contains(where: { $0.intersects(block.rect) }) }
-        let blocks = (kept + replacement).sorted { $0.rect.minY == $1.rect.minY ? $0.rect.minX < $1.rect.minX : $0.rect.minY < $1.rect.minY }
+        var blocks = (kept + replacement).sorted { $0.rect.minY == $1.rect.minY ? $0.rect.minX < $1.rect.minX : $0.rect.minY < $1.rect.minY }
+        if configurationMatches, let before = previousPixels, let pixels {
+            blocks = OCRTextStability.retainingVisibleText(blocks, previous: previousBlocks, before: before, after: pixels, regions: regions)
+        }
+        try Task.checkCancellation()
+        await stabilizer.track(blocks, pixelSize: CGSize(width: image.width, height: image.height))
         try Task.checkCancellation()
         previousPixels = pixels
         previousBlocks = blocks
@@ -94,6 +113,7 @@ actor OCRService {
     }
 
     private func recognizeLines(_ image: CGImage, language: String, mode: OCRMode) throws -> [TextLine] {
+        if let recognizer { return try recognizer(image, language, mode) }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = mode == .fast ? .fast : .accurate
         request.usesLanguageCorrection = mode == .accurate

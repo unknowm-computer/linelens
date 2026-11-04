@@ -64,7 +64,7 @@ trap 'rm -rf "$task_staging"' EXIT
 payload="$task_staging/payload"
 artifacts="$task_staging/artifacts"
 mkdir -p "$artifacts"
-"$task_root/scripts/build-app.sh" release --universal --version "$app_version" \
+"$task_root/scripts/build-app.sh" release --signing distribution --universal --version "$app_version" \
     --build-number "$build_number" --output-dir "$payload"
 app_dir="$payload/LineLens.app"
 if [[ -n "$previous_app" ]]; then

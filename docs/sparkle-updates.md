@@ -33,6 +33,8 @@ LineLens 0.1.2 (build 3)부터 Sparkle 2.10.1을 포함한다. 메뉴 막대와 
 
 ## 릴리스 만들기
 
+`package-release.sh`는 고정 코드 서명과 Sparkle 업데이트 서명 키가 있는 배포 Mac에서 실행한다. 다른 Mac에서는 `./scripts/build-app.sh debug` 또는 `release --signing development`로 개인 키 없이 개발할 수 있다. 개발 앱은 별도 Bundle ID를 사용하고 Sparkle를 시작하지 않는다.
+
 아래 버전·빌드 번호는 명령 형식의 예시다. 실제 배포는 이전보다 높은 빌드 번호와 아직 생성하지 않은 버전을 사용한다. `dist/releases/<version>`이 이미 있으면 덮어쓰지 않고 중단한다.
 
 ```sh

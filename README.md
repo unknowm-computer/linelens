@@ -51,23 +51,32 @@ macOS 15 이상을 지원한다. 설치받는 사용자는 `LineLens.app`을 응
 
 Swift 6 및 macOS 프레임워크를 포함하는 Xcode 개발 환경이 필요하다. `Package.swift`를 열 수 있으며 업데이트 의존성은 Sparkle 2.10.1로 고정한다. 최초 패키지 다운로드에는 인터넷이 필요하다.
 
-다음은 기존 고정 서명 키를 보유한 개발 Mac의 절차다. 설치받는 사용자나 개인 키가 없는 다른 Mac에서 새 인증서를 만들어 대체하지 않는다.
+다른 Mac에서 수정·테스트할 때는 개인 키 없이 개발 앱을 빌드한다. `debug`의 기본 서명은 임시 서명(`ad-hoc`)이다.
+
+```sh
+./scripts/build-app.sh debug
+open "dist/development/LineLens Dev.app"
+swift test
+```
+
+개발 앱은 이름 `LineLens Dev`, Bundle ID `com.linelens.app.dev`를 사용한다. 배포 앱과 설정·화면 기록 승인·접근성 승인을 구분하며, Sparkle 업데이트는 사용하지 않는다. 재빌드 후에는 개발 앱 권한을 다시 승인해야 할 수 있다. 최적화된 개발 앱은 `./scripts/build-app.sh release --signing development`로 만들 수 있다.
+
+배포용 `release` 빌드는 기존 고정 코드 서명을 요구한다. 아래는 기존 키를 보유한 서명 Mac의 절차다. 개인 키가 없는 다른 Mac에서 새 인증서를 만들어 배포 서명을 대체하지 않는다.
 
 ```sh
 ./scripts/setup-local-signing.sh
 ./scripts/build-app.sh release
 open dist/LineLens.app
-swift test
 ```
 
 `xcode-select`가 Command Line Tools를 가리키면 다음과 같이 Xcode를 지정한다.
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./scripts/build-app.sh release
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./scripts/build-app.sh debug
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift test
 ```
 
-빌드는 별도 디렉터리에서 조립·서명·검증한 후 앱을 교체한다. 같은 결과물이면 기존 앱을 보존한다. 고정 서명이 없거나 일치하지 않으면 중단하며 임시 서명으로 자동 전환하지 않는다. 배포용 통합 앱과 서명된 업데이트 생성은 [Sparkle 문서](docs/sparkle-updates.md)를 따른다.
+빌드는 별도 디렉터리에서 조립·서명·검증한 후 해당 앱을 교체한다. 같은 결과물이면 기존 앱을 보존한다. 배포 모드에서 고정 서명이 없거나 일치하지 않으면 중단하며 개발 서명으로 자동 전환하지 않는다. 서명 모드는 `--signing development|distribution`으로 명시할 수 있다. 배포용 통합 앱과 서명된 업데이트 생성은 [Sparkle 문서](docs/sparkle-updates.md)를 따른다.
 
 ## 제약과 후속 작업
 

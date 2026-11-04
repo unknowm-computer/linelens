@@ -4,29 +4,45 @@ set -euo pipefail
 task_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$task_root"
 configuration=release
-output_dir="$task_root/dist"
+output_dir=""
+signing_mode=""
 app_version=""
 build_number=""
 universal=0
 usage() {
-    printf 'Usage: %s [debug|release] [--universal] [--version X.Y.Z] [--build-number N] [--output-dir DIRECTORY]\n' "$0"
+    printf 'Usage: %s [debug|release] [--signing development|distribution] [--universal] [--version X.Y.Z] [--build-number N] [--output-dir DIRECTORY]\n' "$0"
+    printf 'Signing defaults: debug=development (no key), release=distribution (fixed certificate).\n'
 }
 if [[ "${1:-}" == "debug" || "${1:-}" == "release" ]]; then configuration="$1"; shift; fi
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --universal) universal=1; shift ;;
-        --version|--build-number|--output-dir)
+        --version|--build-number|--output-dir|--signing)
             if [[ $# -lt 2 || -z "$2" ]]; then usage >&2; exit 1; fi
             case "$1" in
                 --version) app_version="$2" ;;
                 --build-number) build_number="$2" ;;
                 --output-dir) output_dir="$2" ;;
+                --signing) signing_mode="$2" ;;
             esac
             shift 2 ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 1 ;;
     esac
 done
+if [[ -z "$signing_mode" ]]; then
+    if [[ "$configuration" == "debug" ]]; then signing_mode=development; else signing_mode=distribution; fi
+fi
+if [[ "$signing_mode" != "development" && "$signing_mode" != "distribution" ]]; then
+    usage >&2; exit 1
+fi
+app_name=LineLens
+if [[ "$signing_mode" == "development" ]]; then
+    app_name="LineLens Dev"
+    if [[ -z "$output_dir" ]]; then output_dir="$task_root/dist/development"; fi
+elif [[ -z "$output_dir" ]]; then
+    output_dir="$task_root/dist"
+fi
 if [[ -n "$app_version" && ! "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     printf '버전은 X.Y.Z 형식이어야 합니다.\n' >&2; exit 1
 fi
@@ -43,12 +59,16 @@ if [[ "$bundle_identifier" != "$source_identifier" || ! "$expected_identity" =~ 
 fi
 expected_requirement="identifier \"$bundle_identifier\" and certificate leaf = H\"$expected_identity\""
 
-# Self-signed builds use the same certificate for development and distribution.
+# Development builds never open the distribution keychain. Distribution keeps
+# the pinned identity so installed updates retain the same code requirement.
 signing_arguments=(--timestamp=none)
-if [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
+if [[ "$signing_mode" == "development" ]]; then
+    signing_identity="-"
+    bundle_identifier="${bundle_identifier}.dev"
+elif [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
     signing_identity="$CODE_SIGN_IDENTITY"
     if [[ "$signing_identity" == "-" ]]; then
-        printf '임시 서명은 업데이트 시 화면 기록 승인을 잃으므로 지원하지 않습니다.\n' >&2
+        printf '배포 빌드에는 고정 서명이 필요합니다. 키 없는 개발 빌드는 --signing development 를 사용하세요.\n' >&2
         exit 1
     fi
     if [[ -n "${CODE_SIGN_KEYCHAIN:-}" ]]; then
@@ -58,7 +78,7 @@ else
     signing_dir="$HOME/Library/Application Support/LineLens/Signing"
     if [[ ! -f "$signing_dir/identity.sha1" || ! -f "$signing_dir/LineLens.keychain-db" ||
           ! -f "$signing_dir/password" || ! -f "$signing_dir/certificate.cer" ]]; then
-        printf '고정 서명이 필요합니다. 먼저 ./scripts/setup-local-signing.sh 를 실행하세요.\n기존 앱은 보존됩니다.\n' >&2
+        printf '배포 빌드에는 기존 고정 서명이 필요합니다.\n키 없는 개발 빌드: ./scripts/build-app.sh debug\n기존 앱은 보존됩니다.\n' >&2
         exit 1
     fi
     read -r signing_identity < "$signing_dir/identity.sha1"
@@ -88,6 +108,13 @@ mkdir -p "$metadata_dir"
 info_candidate="$(mktemp "$metadata_dir/.Info.XXXXXX")"
 trap 'rm -f "$info_candidate"' EXIT
 cp "$task_root/Resources/Info.plist" "$info_candidate"
+if [[ "$signing_mode" == "development" ]]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_identifier" "$info_candidate"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $app_name" "$info_candidate"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName $app_name" "$info_candidate"
+    /usr/libexec/PlistBuddy -c 'Add :LineLensDevelopmentBuild bool true' "$info_candidate"
+    /usr/libexec/PlistBuddy -c 'Set :SUEnableAutomaticChecks false' "$info_candidate"
+fi
 if [[ -n "$app_version" ]]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $app_version" "$info_candidate"
 fi
@@ -101,7 +128,7 @@ rm -f "$info_candidate"
 linker_arguments=(-Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$versioned_info")
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
-app_dir="$output_dir/LineLens.app"
+app_dir="$output_dir/$app_name.app"
 task_staging="$(mktemp -d "$output_dir/.build-app.XXXXXX")"
 trap 'rm -rf "$task_staging"' EXIT
 binary_paths=()
@@ -120,7 +147,7 @@ else
     binary_dir="$(swift build -c "$configuration" --show-bin-path)"
     binary_paths+=("$binary_dir/LineLens")
 fi
-staged_app="$task_staging/LineLens.app"
+staged_app="$task_staging/$app_name.app"
 mkdir -p "$staged_app/Contents/MacOS" "$staged_app/Contents/Resources"
 if [[ "$universal" == "1" ]]; then
     lipo -create "${binary_paths[@]}" -output "$staged_app/Contents/MacOS/LineLens"
@@ -141,18 +168,20 @@ rm -rf "$framework/Versions/B/XPCServices" "$framework/XPCServices"
 for nested_code in "$framework/Versions/B/Autoupdate" "$framework/Versions/B/Updater.app" "$framework"; do
     codesign --force --options=0 --sign "$signing_identity" "${signing_arguments[@]}" "$nested_code"
 done
-codesign --force --sign "$signing_identity" "${signing_arguments[@]}" --identifier "$bundle_identifier" "$staged_app"
-if ! codesign --verify --all-architectures --deep --strict -R="$expected_requirement" "$staged_app"; then
+codesign --force --options=0 --sign "$signing_identity" "${signing_arguments[@]}" --identifier "$bundle_identifier" "$staged_app"
+verification_arguments=(--verify --all-architectures --deep --strict)
+if [[ "$signing_mode" == "distribution" ]]; then verification_arguments+=(-R="$expected_requirement"); fi
+if ! codesign "${verification_arguments[@]}" "$staged_app"; then
     printf '프로젝트에 고정된 배포 서명과 일치하지 않습니다. 기존 앱은 보존됩니다.\n' >&2
     exit 1
 fi
-new_requirement="$(codesign -d -r- "$staged_app" 2>&1 | sed -n 's/^designated => //p')"
-if [[ -z "$new_requirement" || "$new_requirement" == *cdhash* ]]; then
+new_requirement="$(codesign -d -r- "$staged_app" 2>&1 | sed -nE 's/^(# )?designated => //p')"
+if [[ -z "$new_requirement" || ( "$signing_mode" == "distribution" && "$new_requirement" == *cdhash* ) ]]; then
     printf '업데이트 간 유지되는 서명이 아닙니다. 기존 앱은 보존됩니다.\n' >&2
     exit 1
 fi
 if [[ -d "$app_dir" ]]; then
-    existing_requirement="$(codesign -d -r- "$app_dir" 2>&1 | sed -n 's/^designated => //p')"
+    existing_requirement="$(codesign -d -r- "$app_dir" 2>&1 | sed -nE 's/^(# )?designated => //p')"
     if [[ -n "$existing_requirement" && "$existing_requirement" != *cdhash* ]] &&
        ! codesign --verify --all-architectures --strict -R="$existing_requirement" "$staged_app"; then
         if [[ "${ALLOW_SIGNING_IDENTITY_CHANGE:-0}" != "1" ]]; then
@@ -166,7 +195,7 @@ fi
 same_app_payload() {
     [[ -d "$app_dir" ]] || return 1
     cmp -s "$staged_app/Contents/Info.plist" "$app_dir/Contents/Info.plist" || return 1
-    codesign --verify --all-architectures --deep --strict -R="$new_requirement" "$app_dir" || return 1
+    codesign "${verification_arguments[@]}" "$app_dir" || return 1
     # Each nested signature has its own signing time. Compare all resources and
     # executable payloads after validating signatures; strip temporary copies only.
     ditto "$app_dir" "$task_staging/existing-payload.app" || return 1
@@ -216,5 +245,9 @@ else
         exit 1
     fi
 fi
-printf '\n고정 서명: %s\n' "$signing_identity"
+if [[ "$signing_mode" == "development" ]]; then
+    printf '\n개발용 임시 서명: 개인 키 없이 빌드했습니다. 재빌드 후 개발 앱 권한 재승인이 필요할 수 있습니다.\n'
+else
+    printf '\n고정 서명: %s\n' "$signing_identity"
+fi
 printf '\nBuilt: %s\nRun: open "%s"\n' "$app_dir" "$app_dir"

@@ -15,13 +15,15 @@ struct ResultLanguageSettingsView: View {
                     Text("자동 감지").tag("auto")
                     ForEach(model.recognitionLanguages) { Text(languageName($0.id)).tag($0.id) }
                 }
-                TranslationTargetLanguagePicker(target: $model.settings.targetLanguage,
+                TranslationTargetLanguagePicker(target: Binding(get: { model.recognitionSettings.targetLanguage }, set: model.setResultTargetLanguage),
                     supportedLanguages: model.translation.supportedLanguages)
             }
             .pickerStyle(.menu)
-            Text("인식 언어는 OCR과 번역 원문에 함께 적용됩니다. 설정 창에서는 각각 지정할 수 있습니다.")
+            Text("인식 언어는 OCR과 번역 원문에 함께 적용됩니다. 여기서 선택한 언어는 현재 인식에만 적용되며 설정 기본값은 바뀌지 않습니다.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
+                Button("설정 기본값 사용") { model.resetResultLanguages() }
+                    .disabled(!model.resultOptions.hasLanguageOverrides)
                 Spacer()
                 Button("완료") { dismiss() }.keyboardShortcut(.defaultAction)
             }
