@@ -75,7 +75,7 @@ open "dist/development/LineLens Dev.app"
 - `CODE_SIGN_IDENTITY`와 선택적인 `CODE_SIGN_KEYCHAIN`은 고정 인증서와 일치해야 한다. 설정 없음·불일치·서명 실패에서는 기존 앱을 보존하고 중단한다. 임시 서명으로 자동 전환하지 않는다.
 - 새 앱은 기존 앱의 DR(Designated Requirement)을 만족해야 한다. 의도적인 인증서 교체는 공개 지문 설정 변경과 `ALLOW_SIGNING_IDENTITY_CHANGE=1`이 필요하며 재승인이 필요할 수 있다.
 
-개인 키를 잃거나 인증서를 교체하면 같은 서명 신원을 유지할 수 없다. 현재 최종 서명 Mac을 변경하려면 별도 이전 계획이 필요하다. 설치받는 Mac에는 개인 키·키체인을 복사하지 않는다.
+배포용 Mac을 추가할 때는 [배포 서명 이전 절차](sparkle-updates.md#다른-mac에서-기존-서명으로-배포하기)에 따라 전용 키체인과 Sparkle 키를 복원한다. 개인 키를 잃거나 인증서를 교체하면 같은 서명 신원을 유지할 수 없다. 설치받는 Mac에는 배포 앱만 전달한다.
 
 ## 앱 교체와 배포 검증
 

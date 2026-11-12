@@ -73,9 +73,52 @@ ZIP만 올리면 업데이트를 찾을 수 없다. `appcast.xml`만 올리고 Z
 
 0.1.1 이하에는 Sparkle가 없으므로 0.1.2 이상으로 한 번 수동 교체해야 한다. 자체 서명은 Apple 공증과 다르며, Sparkle를 사용해도 macOS의 실행 허용 안내가 별도로 나타날 수 있다.
 
-## 업데이트 키를 다른 Mac으로 옮기기
+## 다른 Mac에서 기존 서명으로 배포하기
 
-Sparkle 키는 공식 도구로 내보내기·가져오기가 가능하다. 아래 파일은 비밀이므로 암호화한 백업이나 안전한 경로로 옮기고 Git·배포 파일에 넣지 않는다. 이 작업은 자동으로 수행하지 않는다.
+배포용 Mac에는 Xcode와 LineLens 저장소, 기존 코드 서명 키체인, 기존 Sparkle 키가 필요하다. 이전용 `LineLens-Release-Signing.7z`에는 전용 `Signing` 폴더와 `LineLens-Sparkle.key`가 들어 있다. 암호화 파일은 안전한 경로로 전달하고 암호는 별도로 보관한다.
+
+1. 이전용 파일을 7z를 지원하는 도구로 열고, 압축을 푼 위치를 아래 `transfer_dir`에 지정한다. 새 Mac의 LineLens 저장소에서 실행한다. 기존 `Signing` 폴더가 있다면 `./scripts/setup-local-signing.sh`로 지문을 확인하고 복사 단계는 건너뛴다.
+
+   ```sh
+   (
+     set -e
+     umask 077
+     transfer_dir="/path/to/extracted-release-signing"
+     signing_dir="$HOME/Library/Application Support/LineLens/Signing"
+     for name in LineLens.keychain-db password certificate.cer identity.sha1; do
+       test -f "$transfer_dir/Signing/$name"
+     done
+     mkdir -p "$(dirname "$signing_dir")"
+     mkdir -m 700 "$signing_dir"
+     for name in LineLens.keychain-db password certificate.cer identity.sha1; do
+       install -m 600 "$transfer_dir/Signing/$name" "$signing_dir/$name"
+     done
+   )
+   ```
+
+2. 키체인을 열고 인증서 지문이 프로젝트와 일치하는지 확인한 뒤, 현재 사용자의 코드 서명 정책에 인증서를 등록한다. macOS가 인증을 요청하면 새 Mac에서 승인한다.
+
+   ```sh
+   signing_dir="$HOME/Library/Application Support/LineLens/Signing"
+   ./scripts/setup-local-signing.sh &&
+     security add-trusted-cert -r trustRoot -p codeSign \
+       -k "$signing_dir/LineLens.keychain-db" "$signing_dir/certificate.cer"
+   ```
+
+3. Sparkle 키를 로그인 키체인에 가져오고 앱의 공개 키와 일치하는지 확인한다. 이미 가져온 경우 `setup-sparkle.sh`로 확인한다.
+
+   ```sh
+   swift package resolve &&
+     .build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.linelens.app \
+       -f /path/to/extracted-release-signing/LineLens-Sparkle.key &&
+     ./scripts/setup-sparkle.sh
+   ```
+
+4. 새 버전과 증가한 빌드 번호로 `package-release.sh`를 실행한다. `--previous-app`에 기존 배포 앱을 지정하면 새 앱이 기존 코드 서명 요구조건을 만족하는지 확인한다. 검증된 ZIP과 `appcast.xml`은 위의 [GitHub Releases 게시 절차](#github-releases에-게시)를 따른다.
+
+### Sparkle 키만 내보내거나 가져오기
+
+Sparkle의 `generate_keys`는 `-x`로 기존 개인 키를 파일에 내보내고 `-f`로 로그인 키체인에 가져온다. 개인 키 파일은 안전한 경로에 보관한다.
 
 ```sh
 # 기존 Mac: 개인 키를 안전한 저장 위치로 내보내기
@@ -87,7 +130,7 @@ Sparkle 키는 공식 도구로 내보내기·가져오기가 가능하다. 아�
 ./scripts/setup-sparkle.sh
 ```
 
-이는 **Sparkle 키만** 이전한다. 기존 코드 서명 개인 키는 별개로 현재 내보내기 제한이 있으며, Sparkle 설정만으로 코드 서명 Mac의 이전 문제가 해결되지는 않는다. 최종 앱은 기존 코드 서명 신원도 유지해야 화면 기록 승인 연결을 보존할 수 있다. 자체 서명 배포에서 Sparkle 개인 키를 잃으면 기존 앱이 새 서명 키를 신뢰하도록 자동 복구할 수 있다고 가정하지 말고 수동 재설치를 준비한다.
+코드 서명 개인 키의 이전에는 위의 전용 `Signing` 폴더를 사용한다. 최종 앱은 기존 코드 서명 신원을 유지해야 화면 기록 승인 연결을 보존할 수 있다. 자체 서명 배포에서 Sparkle 개인 키를 잃으면 기존 사용자의 수동 재설치가 필요할 수 있다.
 
 ## 참고
 
