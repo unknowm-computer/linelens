@@ -180,13 +180,14 @@ actor OverlayImageRenderer {
             let lineHeight = lineRects.map(\.height).sorted()[lineRects.count / 2]
             let preferredSize = max(9, min(48, block.fontSizeHint ?? lineHeight * 1.1))
             drawFitted(text, in: source.insetBy(dx: -1, dy: -1).intersection(bounds),
-                       preferredSize: preferredSize, color: appearance.foreground)
+                       preferredSize: preferredSize, color: appearance.foreground,
+                       background: style == .inPlace ? appearance.background.cgColor : nil)
         }
         try Task.checkCancellation()
         return context.makeImage()
     }
 
-    private func drawFitted(_ text: String, in rect: CGRect, preferredSize: CGFloat, color: NSColor) {
+    private func drawFitted(_ text: String, in rect: CGRect, preferredSize: CGFloat, color: NSColor, background: CGColor? = nil) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byWordWrapping
         var size = preferredSize
@@ -202,11 +203,18 @@ actor OverlayImageRenderer {
         // Constrain drawing to the original text area rather than covering adjacent controls.
         let drawRect = CGRect(x: rect.minX, y: rect.minY + max(0, (rect.height - ceil(measured.height)) / 2),
                               width: rect.width, height: rect.height)
-        NSGraphicsContext.current?.cgContext.saveGState()
-        NSGraphicsContext.current?.cgContext.clip(to: rect)
+        let context = NSGraphicsContext.current?.cgContext
+        context?.saveGState()
+        context?.clip(to: rect)
+        if let background, let context {
+            // The transparent patch covers the source lines and the space used by the translation.
+            let label = CGRect(origin: drawRect.origin, size: CGSize(width: ceil(measured.width), height: ceil(measured.height)))
+            context.setFillColor(background)
+            context.fill(label.insetBy(dx: -1, dy: -1))
+        }
         (text as NSString).draw(with: drawRect,
             options: [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine], attributes: attributes)
-        NSGraphicsContext.current?.cgContext.restoreGState()
+        context?.restoreGState()
     }
 
     private func drawCaption(_ text: String, below source: CGRect, in bounds: CGRect) {

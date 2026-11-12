@@ -95,6 +95,12 @@ final class AppModel {
         setResultOptions(next)
     }
 
+    func setResultOverlayStyle(_ style: OverlayStyle?) {
+        var next = resultOptions
+        next.overlayStyle = style
+        setResultOptions(next)
+    }
+
     func setResultTargetLanguage(_ identifier: String) {
         guard !identifier.isEmpty else { return }
         var next = resultOptions
@@ -102,10 +108,15 @@ final class AppModel {
         setResultOptions(next)
     }
 
+    func setResultDownloadedTranslationLanguagesOnly(_ enabled: Bool) {
+        resultOptions.downloadedTranslationLanguagesOnly = enabled
+    }
+
     func resetResultLanguages() {
         var next = resultOptions
         next.recognitionLanguage = nil
         next.targetLanguage = nil
+        next.downloadedTranslationLanguagesOnly = nil
         setResultOptions(next)
     }
 
@@ -118,14 +129,16 @@ final class AppModel {
 
     private func applyConfigurationChanges(from previous: AppSettings) {
         let current = recognitionSettings
+        var previous = previous
+        previous.downloadedTranslationLanguagesOnly = current.downloadedTranslationLanguagesOnly
         guard current != previous else { return }
         if current.captureShortcut != previous.captureShortcut || current.stopShortcut != previous.stopShortcut {
             configureHotKeys()
         }
         windowsController?.updateResultLevel()
-        if current.presentation != previous.presentation {
-            if current.presentation == .overlay { windowsController?.hideResults() }
-            else { showResults() }
+        if current.presentation != previous.presentation || current.alwaysShowResults != previous.alwaysShowResults {
+            if current.showsResultsOnSelection { showResults() }
+            else { windowsController?.hideResults() }
         }
         let recognitionChanged = current.ocrLanguage != previous.ocrLanguage || current.ocrMode != previous.ocrMode
             || current.recognitionSource != previous.recognitionSource
@@ -134,6 +147,11 @@ final class AppModel {
             cancelWork()
             fingerprint = nil
             if hasTarget { requestRefresh() }
+        } else if current.overlayStyle != previous.overlayStyle {
+            imageOverlay.invalidateImage()
+            if current.presentation != .panel, current.translationEnabled, !imageOverlay.canRender {
+                requestRefresh()
+            }
         }
         if current.translationEnabled != previous.translationEnabled
             || current.sourceLanguage != previous.sourceLanguage || current.targetLanguage != previous.targetLanguage
@@ -556,16 +574,15 @@ final class AppModel {
                     method = result.effectiveMode == .fast ? "빠른 OCR" : "정확한 OCR"
                 }
                 guard self.generation == token, !Task.isCancelled else { return }
-                let incoming = newBlocks ?? self.blocks
-                guard await self.imageOverlay.accept(captured, blocks: incoming, topInset: topInset),
+                guard let incoming = await self.imageOverlay.accept(captured, blocks: newBlocks ?? self.blocks, topInset: topInset),
                       self.generation == token else { return }
                 self.lastCaptureRect = captured.screenRect
                 self.fingerprint = recognizedFingerprint
                 self.usedAppText = appBlocks != nil
                 if self.isWaitingForScrollTranslation { self.hasFreshScrollRecognition = true }
                 if self.errorMessage != nil { self.errorMessage = nil }
-                if let newBlocks {
-                    let reconciled = TextSnapshot.reconcile(newBlocks, previous: self.blocks,
+                if newBlocks != nil {
+                    let reconciled = TextSnapshot.reconcile(incoming, previous: self.blocks,
                         pixelSize: CGSize(width: captured.image.width, height: captured.image.height))
                     if reconciled != self.blocks {
                         self.blocks = reconciled
@@ -653,7 +670,7 @@ final class AppModel {
         // its window until OCR and translation produce the new layout.
         let matchesCaptureSize = lastCaptureRect?.size == rect.size
         if !matchesCaptureSize, oldRect?.size != rect.size { fingerprint = nil; requestRefresh() }
-        if matchesCaptureSize { imageOverlay.prepare(blocks: blocks, settings: settings) }
+        if matchesCaptureSize { imageOverlay.prepare(blocks: blocks, settings: recognitionSettings) }
         guard let presentation = imageOverlay.presentation else {
             // Keep the emptied, transparent window during post-scroll rendering.
             // The next result then appears through opacity alone, without a new
@@ -663,10 +680,18 @@ final class AppModel {
         }
         let topInset = capture.overlayTopInset(for: target, rect: rect)
         let contentRect = CGRect(x: rect.minX, y: rect.minY + topInset, width: rect.width, height: max(0, rect.height - topInset))
-        guard !capture.isOccluded(target, rect: contentRect, overlayWindowID: windowsController?.overlay.window?.windowNumber) else { windowsController?.overlay.hide(); return }
+        let level = capture.overlayLevel(for: target)
+        let resultWindow = windowsController?.resultWindowAboveOverlay(at: level)
+        guard let exclusions = capture.overlayExclusions(for: target, rect: contentRect,
+            overlayWindowID: windowsController?.overlay.window?.windowNumber, resultWindowID: resultWindow?.windowNumber,
+            excludeBrowserLinkStatus: settings.excludeBrowserLinkStatus) else {
+            windowsController?.overlay.hide()
+            return
+        }
         windowsController?.overlay.show(rect: rect, presentation: presentation,
             livePreview: settings.livePreview && settings.automaticRefresh,
-            level: capture.overlayLevel(for: target), topInset: topInset, fadeIn: isWaitingForScrollTranslation)
+            level: level, topInset: topInset, fadeIn: isWaitingForScrollTranslation,
+            below: resultWindow?.level == level ? resultWindow?.windowNumber : nil, excluding: exclusions)
         isWaitingForScrollTranslation = false
         hasFreshScrollRecognition = false
     }
@@ -699,7 +724,7 @@ final class AppModel {
             showResults()
         }
     }
-    private func showResultsIfNeeded() { if settings.presentation != .overlay { showResults() } }
+    private func showResultsIfNeeded() { if settings.showsResultsOnSelection { showResults() } }
 
     func copy(_ text: String) {
         NSPasteboard.general.clearContents()

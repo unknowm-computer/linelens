@@ -8,6 +8,7 @@ final class TranslationOverlayController {
     private var liveSurface: CapturedSurface?
     private var livePreview = false
     private var scrollSuppressed = false
+    private var orderedBelowWindow: Int?
     private var fadeTask: Task<Void, Never>?
     private var fadeID = UUID()
 
@@ -25,11 +26,12 @@ final class TranslationOverlayController {
     }
 
     func show(rect: CGRect, presentation: OverlayPresentation, livePreview: Bool, level: NSWindow.Level = .floating,
-              topInset: CGFloat = 0, fadeIn: Bool = false) {
+              topInset: CGFloat = 0, fadeIn: Bool = false, below windowNumber: Int? = nil, excluding exclusions: [CGRect] = []) {
         guard !scrollSuppressed || fadeIn else { return }
         cancelFade()
         scrollSuppressed = false
         ensureWindow()
+        let needsOrdering = window?.isVisible != true || window?.level != level || orderedBelowWindow != windowNumber
         self.livePreview = livePreview && presentation.coversSource
         // Install geometry, contents and initial opacity in a single transaction.
         // A newly attached patch must never flash at full opacity before fading.
@@ -39,14 +41,22 @@ final class TranslationOverlayController {
         let frame = CaptureGeometry.flipScreenRect(rect, mainDisplayHeight: NSScreen.screens.first?.frame.height ?? 0)
         if window?.frame != frame { window?.setFrame(frame, display: false, animate: false) }
         content.layoutSubtreeIfNeeded()
-        content.install(presentation, topInset: topInset)
+        let localExclusions = exclusions.map { rectInScreen in
+            CGRect(x: rectInScreen.minX - rect.minX, y: rect.maxY - rectInScreen.maxY,
+                   width: rectInScreen.width, height: rectInScreen.height)
+        }
+        content.install(presentation, topInset: topInset, excluding: localExclusions)
         if presentation.coversSource {
             if self.livePreview, let liveSurface { content.setBackground(liveSurface.surface) }
             else { content.setBackground(presentation.source) }
         } else { content.setBackground(nil) }
         if fadeIn { content.fadePatches(from: 0, to: 1, duration: 0.1) }
         CATransaction.commit()
-        if window?.isVisible != true { window?.orderFrontRegardless() }
+        if needsOrdering {
+            if let windowNumber { window?.order(.below, relativeTo: windowNumber) }
+            else if window?.isVisible != true { window?.orderFrontRegardless() }
+            orderedBelowWindow = windowNumber
+        }
     }
 
     func fadeOutAndDiscard(duration: TimeInterval = 0.08) {
@@ -115,17 +125,19 @@ final class TranslationOverlayController {
 private final class OverlayView: NSView {
     let background = CALayer()
     private let patchRoot = CALayer()
-    private let clip = CALayer()
+    private let clip = CAShapeLayer()
     private var patches: [UUID: CALayer] = [:]
     private var patchImages: [UUID: CGImage] = [:]
     private var patchRects: [UUID: CGRect] = [:]
     private var topInset: CGFloat = 0
+    private var exclusions: [CGRect] = []
     var patchLayerCount: Int { patches.count }
     var patchOpacity: Float { patchRoot.opacity }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        clip.fillColor = NSColor.black.cgColor
         layer?.mask = clip
         background.contentsGravity = .resize
         background.minificationFilter = .nearest
@@ -158,8 +170,10 @@ private final class OverlayView: NSView {
         CATransaction.commit()
     }
 
-    func install(_ presentation: OverlayPresentation, topInset: CGFloat) {
+    func install(_ presentation: OverlayPresentation, topInset: CGFloat, excluding exclusions: [CGRect]) {
         self.topInset = topInset
+        let exclusionsChanged = self.exclusions != exclusions
+        self.exclusions = exclusions
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let ids = Set(presentation.patches.map(\.id))
@@ -186,7 +200,7 @@ private final class OverlayView: NSView {
             patchLayer.zPosition = CGFloat(index + 1)
             patchRects[patch.id] = patch.rect
         }
-        updateFrames()
+        updateFrames(updateMask: exclusionsChanged)
         CATransaction.commit()
     }
 
@@ -198,11 +212,21 @@ private final class OverlayView: NSView {
         CATransaction.commit()
     }
 
-    private func updateFrames() {
+    private func updateFrames(updateMask: Bool = false) {
         background.frame = bounds
         patchRoot.frame = bounds
-        clip.backgroundColor = NSColor.black.cgColor
-        clip.frame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - topInset))
+        let visibleFrame = CGRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - topInset))
+        if updateMask || clip.frame != visibleFrame || clip.path == nil {
+            clip.frame = visibleFrame
+            let visibleArea = CGPath(rect: CGRect(origin: .zero, size: visibleFrame.size), transform: nil)
+            if exclusions.isEmpty {
+                clip.path = visibleArea
+            } else {
+                let coveredArea = CGMutablePath()
+                coveredArea.addRects(exclusions)
+                clip.path = visibleArea.subtracting(coveredArea)
+            }
+        }
         for (id, rect) in patchRects {
             let box = CaptureGeometry.resolve(rect, in: bounds)
             patches[id]?.frame = CGRect(x: box.minX, y: bounds.height - box.maxY, width: box.width, height: box.height)

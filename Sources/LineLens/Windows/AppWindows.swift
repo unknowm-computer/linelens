@@ -55,6 +55,12 @@ final class AppWindows: NSObject, NSWindowDelegate {
     }
     func updateResultLevel() { results?.level = model.settings.pinResults ? .floating : .normal }
 
+    func resultWindowAboveOverlay(at level: NSWindow.Level) -> NSWindow? {
+        guard model.settings.alwaysShowResults, let results, results.isVisible,
+              results.level.rawValue >= level.rawValue else { return nil }
+        return results
+    }
+
     func releaseIdleResources() {
         guard !model.hasTarget, let results, !results.isVisible else { return }
         results.delegate = nil

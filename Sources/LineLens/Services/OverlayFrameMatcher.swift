@@ -10,7 +10,13 @@ actor OverlayFrameMatcher {
 
     init(stabilizer: OCRFrameStabilizer? = nil) { self.stabilizer = stabilizer }
 
-    func matches(_ image: CGImage, baseline source: CGImage, regions: [CGRect], pixels: ImagePixels? = nil, sourcePixels: ImagePixels? = nil) async throws -> Bool {
+    func retainingVisibleText(_ incoming: [TextBlock], previous: [TextBlock], before: CapturedImage, after: CapturedFrame) -> [TextBlock] {
+        OCRTextStability.retainingVisibleText(incoming, previous: previous,
+            before: before.pixels ?? ImagePixels(before.image), after: after.pixels ?? ImagePixels(after.image))
+    }
+
+    func matches(_ image: CGImage, baseline source: CGImage, regions: [CGRect], pixels: ImagePixels? = nil,
+                 sourcePixels: ImagePixels? = nil, allowColorChanges: Bool = true) async throws -> Bool {
         try Task.checkCancellation()
         guard image.width == source.width, image.height == source.height else { return false }
         if image === source { return true }
@@ -29,16 +35,20 @@ actor OverlayFrameMatcher {
             // Ignore compression/color rounding and a few isolated noisy pixels,
             // but do not use a whole-screen percentage that could hide a digit edit.
             let allowance = max(3, min(16, Int(rect.width * rect.height) / 1000))
-            for y in Int(rect.minY)..<Int(rect.maxY) {
+            scan: for y in Int(rect.minY)..<Int(rect.maxY) {
                 try Task.checkCancellation()
                 for x in Int(rect.minX)..<Int(rect.maxX) {
                     let offset = (y * before.width + x) * 4
                     if (0..<3).contains(where: { abs(Int(before.bytes[offset + $0]) - Int(after.bytes[offset + $0])) > 12 }) {
                         if ignoredPixels.contains(where: { $0.contains(CGPoint(x: x, y: y)) }) { continue }
                         changed += 1
-                        if changed > allowance { return false }
+                        if changed > allowance { break scan }
                     }
                 }
+            }
+            if changed > allowance {
+                guard allowColorChanges,
+                      OCRTextStability.hasMatchingInk(in: rect, before: before, after: after, ignoring: ignoredPixels) else { return false }
             }
         }
         return true

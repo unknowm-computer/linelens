@@ -28,9 +28,15 @@ enum ResultPresentation: String, CaseIterable, Codable, Identifiable {
 }
 
 enum OverlayStyle: String, CaseIterable, Codable, Identifiable {
-    case cover, below
+    case cover, inPlace, below
     var id: String { rawValue }
-    var title: String { self == .cover ? "이미지 속 글자 바꾸기" : "원문 아래 번역 상자" }
+    var title: String {
+        switch self {
+        case .cover: "이미지 속 글자 바꾸기"
+        case .inPlace: "원문 위치에 번역 덮기"
+        case .below: "원문 아래 번역 상자"
+        }
+    }
 }
 
 enum OCRMode: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -60,13 +66,18 @@ struct AppSettings: Codable, Equatable {
     var livePreview = true
     var sourceLanguage = "auto"
     var targetLanguage = "ko"
+    var downloadedTranslationLanguagesOnly = false
     var automaticRefresh = true
     var refreshInterval: Double = 2
     var presentation: ResultPresentation = .overlay
     var overlayStyle: OverlayStyle = .cover
+    var excludeBrowserLinkStatus = false
+    var alwaysShowResults = false
     var pinResults = true
     var captureShortcut: KeyboardShortcut? = .capture
     var stopShortcut: KeyboardShortcut?
+
+    var showsResultsOnSelection: Bool { alwaysShowResults || presentation != .overlay }
 
     static func load() -> Self {
         guard let data = UserDefaults.standard.data(forKey: "settings"),
@@ -85,7 +96,8 @@ extension AppSettings {
     private enum CodingKeys: String, CodingKey {
         case translationEnabled, ocrLanguage, ocrMode, recognitionSource, translationQuality, livePreview
         case sourceLanguage, targetLanguage, automaticRefresh, refreshInterval, presentation, overlayStyle
-        case pinResults, captureShortcut, stopShortcut
+        case downloadedTranslationLanguagesOnly
+        case excludeBrowserLinkStatus, alwaysShowResults, pinResults, captureShortcut, stopShortcut
     }
 
     init(from decoder: any Decoder) throws {
@@ -99,10 +111,13 @@ extension AppSettings {
         livePreview = try values.decodeIfPresent(Bool.self, forKey: .livePreview) ?? livePreview
         sourceLanguage = try values.decodeIfPresent(String.self, forKey: .sourceLanguage) ?? sourceLanguage
         targetLanguage = try values.decodeIfPresent(String.self, forKey: .targetLanguage) ?? targetLanguage
+        downloadedTranslationLanguagesOnly = try values.decodeIfPresent(Bool.self, forKey: .downloadedTranslationLanguagesOnly) ?? downloadedTranslationLanguagesOnly
         automaticRefresh = try values.decodeIfPresent(Bool.self, forKey: .automaticRefresh) ?? automaticRefresh
         refreshInterval = try values.decodeIfPresent(Double.self, forKey: .refreshInterval) ?? refreshInterval
         presentation = try values.decodeIfPresent(ResultPresentation.self, forKey: .presentation) ?? presentation
         overlayStyle = try values.decodeIfPresent(OverlayStyle.self, forKey: .overlayStyle) ?? overlayStyle
+        excludeBrowserLinkStatus = try values.decodeIfPresent(Bool.self, forKey: .excludeBrowserLinkStatus) ?? excludeBrowserLinkStatus
+        alwaysShowResults = try values.decodeIfPresent(Bool.self, forKey: .alwaysShowResults) ?? alwaysShowResults
         pinResults = try values.decodeIfPresent(Bool.self, forKey: .pinResults) ?? pinResults
         // Legacy encoders omitted nil shortcuts in otherwise complete settings.
         if values.contains(.captureShortcut) || values.contains(.translationEnabled) {
@@ -121,10 +136,13 @@ extension AppSettings {
         try values.encode(livePreview, forKey: .livePreview)
         try values.encode(sourceLanguage, forKey: .sourceLanguage)
         try values.encode(targetLanguage, forKey: .targetLanguage)
+        try values.encode(downloadedTranslationLanguagesOnly, forKey: .downloadedTranslationLanguagesOnly)
         try values.encode(automaticRefresh, forKey: .automaticRefresh)
         try values.encode(refreshInterval, forKey: .refreshInterval)
         try values.encode(presentation, forKey: .presentation)
         try values.encode(overlayStyle, forKey: .overlayStyle)
+        try values.encode(excludeBrowserLinkStatus, forKey: .excludeBrowserLinkStatus)
+        try values.encode(alwaysShowResults, forKey: .alwaysShowResults)
         try values.encode(pinResults, forKey: .pinResults)
         // Explicit null distinguishes an intentionally removed shortcut from a new setting.
         try values.encode(captureShortcut, forKey: .captureShortcut)

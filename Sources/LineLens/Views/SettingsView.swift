@@ -33,8 +33,13 @@ struct SettingsView: View {
                     Text("번역 품질 선택은 macOS 26.4 이상에서 지원합니다. 현재는 시스템 기본 번역을 사용합니다.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                TranslationLanguagePickers(source: $model.settings.sourceLanguage, target: $model.settings.targetLanguage,
-                    supportedLanguages: model.translation.supportedLanguages)
+                TranslationLanguageFilter(downloadedOnly: $model.settings.downloadedTranslationLanguagesOnly,
+                    settings: model.settings, languages: model.translation.supportedLanguages) { toggle in
+                    toggle
+                } content: { choices in
+                    TranslationLanguagePickers(source: $model.settings.sourceLanguage, target: $model.settings.targetLanguage,
+                        choices: choices)
+                }
                 Text("번역은 기기에서 처리합니다. 언어 모델이 없으면 최초 다운로드를 위한 시스템 안내가 표시됩니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -49,13 +54,24 @@ struct SettingsView: View {
                 Picker("결과 표시", selection: $model.settings.presentation) {
                     ForEach(ResultPresentation.allCases) { Text($0.title).tag($0) }
                 }
-                Picker("화면 위 번역", selection: $model.settings.overlayStyle) {
-                    ForEach(OverlayStyle.allCases) { Text($0.title).tag($0) }
-                }
-                Toggle("실시간 화면 표시", isOn: $model.settings.livePreview)
-                Text("켜면 클릭·스크롤 결과와 배경을 먼저 표시하고 번역된 글자는 조각별로 갱신합니다. 새 위치의 원문은 인식 전 잠깐 보일 수 있습니다. 끄면 다음 인식이 끝날 때까지 이전 번역 화면을 유지합니다.")
+                Toggle("결과 창 항상 표시", isOn: $model.settings.alwaysShowResults)
+                Text("대상 선택을 마치면 ‘번역 화면’ 모드에서도 인식 결과 창을 엽니다.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("번역 화면은 클릭과 스크롤을 통과시킵니다. 변경된 영역만 인식하고, 번역 중인 글자는 …로 표시합니다.")
+                OverlayStylePicker(selection: $model.settings.overlayStyle)
+                Toggle("실시간 화면 표시", isOn: $model.settings.livePreview)
+                    .disabled(model.settings.overlayStyle != .cover)
+                if model.settings.overlayStyle == .cover {
+                    Text("캡처한 배경을 실시간으로 갱신하고, 번역 중인 글자는 …로 표시합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if model.settings.overlayStyle == .inPlace {
+                    Text("실제 화면 위에 번역이 준비된 글자 영역만 덮습니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Toggle("브라우저 링크 주소 표시 영역 제외", isOn: $model.settings.excludeBrowserLinkStatus)
+                    .disabled(model.settings.presentation == .panel)
+                Text("브라우저 창을 번역할 때 링크 주소와 겹치는 부분만 비우고 나머지 번역은 유지합니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("번역 화면은 클릭과 스크롤을 통과시킵니다.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("자동 갱신을 끄면 마지막 번역 화면이 유지됩니다. ‘지금 새로고침’으로 새 내용을 번역할 수 있습니다.")
                     .font(.caption).foregroundStyle(.secondary)

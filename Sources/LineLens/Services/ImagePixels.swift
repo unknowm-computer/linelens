@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import LineLensCore
 
 /// A canonical sRGB, top-row-first buffer shared by frame detection and compositing.
 struct ImagePixels: Sendable {
@@ -60,6 +61,27 @@ enum ImageFingerprint {
 }
 
 extension ImagePixels {
+    func hasSamePixels(as other: ImagePixels, in regions: [CGRect]) -> Bool {
+        guard width == other.width, height == other.height else { return false }
+        let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        return bytes.withUnsafeBytes { before in
+            other.bytes.withUnsafeBytes { after in
+                guard let oldBytes = before.baseAddress, let newBytes = after.baseAddress else { return false }
+                return regions.allSatisfy { region in
+                    let rect = CaptureGeometry.resolve(region, in: bounds).integral.intersection(bounds)
+                    guard !rect.isNull, !rect.isEmpty else { return true }
+                    let column = Int(rect.minX)
+                    let rowBytes = Int(rect.width) * 4
+                    for row in Int(rect.minY)..<Int(rect.maxY) {
+                        let offset = (row * width + column) * 4
+                        if memcmp(oldBytes.advanced(by: offset), newBytes.advanced(by: offset), rowBytes) != 0 { return false }
+                    }
+                    return true
+                }
+            }
+        }
+    }
+
     func changedTiles(from previous: ImagePixels, tileSize: Int = 64) -> [CGRect] {
         guard width == previous.width, height == previous.height else { return [CGRect(x: 0, y: 0, width: 1, height: 1)] }
         var regions: [CGRect] = []

@@ -130,17 +130,49 @@ final class OCRStabilityTests: XCTestCase {
         XCTAssertEqual(missing, [old])
         let misread = OCRTextStability.retainingVisibleText([block("Page")], previous: [old], before: before, after: cursor, regions: regions)
         XCTAssertEqual(misread, [old])
+        let editedPixels = try XCTUnwrap(frame(edit: true).pixels)
         let edited = OCRTextStability.retainingVisibleText([block("Page 124")], previous: [old], before: before,
-            after: try XCTUnwrap(frame(edit: true).pixels), regions: regions)
+            after: editedPixels, regions: regions)
         XCTAssertEqual(edited.map(\.source), ["Page 124"])
+        let addedPixels = try XCTUnwrap(frame(addition: true).pixels)
         let addedStroke = OCRTextStability.retainingVisibleText([block("Page 128")], previous: [old], before: before,
-            after: try XCTUnwrap(frame(addition: true).pixels), regions: regions)
+            after: addedPixels, regions: regions)
         XCTAssertEqual(addedStroke.map(\.source), ["Page 128"], "Added glyph strokes must not be mistaken for a caret")
+        let erasedPixels = try XCTUnwrap(frame(erased: true).pixels)
         let erased = OCRTextStability.retainingVisibleText([], previous: [old], before: before,
-            after: try XCTUnwrap(frame(erased: true).pixels), regions: regions)
+            after: erasedPixels, regions: regions)
         XCTAssertTrue(erased.isEmpty)
         let appended = OCRTextStability.retainingVisibleText([block("Page 1234")], previous: [old], before: before, after: cursor, regions: regions)
         XCTAssertEqual(appended.map(\.source), ["Page 1234"])
+    }
+
+    func testMissingOCRKeepsRecoloredGlyphsButDiscardsChangedText() throws {
+        let original = try XCTUnwrap(frame().pixels)
+        let edited = try XCTUnwrap(frame(edit: true).pixels)
+        let empty = try XCTUnwrap(frame(erased: true).pixels)
+        func recolor(_ pixels: ImagePixels, from column: Int) -> ImagePixels {
+            var bytes = pixels.bytes
+            for row in 0..<pixels.height {
+                for x in column..<pixels.width {
+                    let offset = (row * pixels.width + x) * 4
+                    let background = bytes[offset] == 255
+                    bytes[offset] = background ? 42 : 240
+                    bytes[offset + 1] = background ? 88 : 240
+                    bytes[offset + 2] = background ? 140 : 240
+                }
+            }
+            return ImagePixels(width: pixels.width, height: pixels.height, bytes: bytes)
+        }
+        let translated = block()
+        let regions = [translated.rect]
+        for column in [0, 120] {
+            XCTAssertEqual(OCRTextStability.retainingVisibleText([], previous: [translated], before: original,
+                after: recolor(original, from: column), regions: regions), [translated])
+            XCTAssertEqual(OCRTextStability.retainingVisibleText([], previous: [translated], before: original,
+                after: recolor(edited, from: column), regions: regions), [])
+            XCTAssertEqual(OCRTextStability.retainingVisibleText([], previous: [translated], before: original,
+                after: recolor(empty, from: column), regions: regions), [])
+        }
     }
 
     func testOCRPipelineRetainsTranslationOnFirstMissAndAcceptsImmediateDeletion() async throws {
@@ -202,7 +234,7 @@ final class OCRStabilityTests: XCTestCase {
         let captured = CapturedImage(image: off.image, screenRect: CGRect(x: 0, y: 0, width: 320, height: 100),
             fingerprint: off.fingerprint, pixels: off.pixels, sequence: off.sequence)
         let accepted = await session.accept(captured, blocks: [block()])
-        XCTAssertTrue(accepted)
+        XCTAssertNotNil(accepted)
         let rendered = expectation(description: "Translation remains available across cursor phases")
         session.didRender = { rendered.fulfill() }
         session.prepare(blocks: [block()], settings: AppSettings())
@@ -214,7 +246,7 @@ final class OCRStabilityTests: XCTestCase {
         await stabilizer.observe(edit)
         session.observe(edit)
         let stale = await session.accept(captured, blocks: [block()])
-        XCTAssertFalse(stale)
+        XCTAssertNil(stale)
         XCTAssertEqual(session.presentation?.patches.count, 1, "Keep the last completed translation during fresh OCR")
     }
 }

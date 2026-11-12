@@ -15,12 +15,14 @@ struct ResultRecognitionSettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
+                OverlayStylePicker(override: Binding(get: { model.resultOptions.overlayStyle }, set: model.setResultOverlayStyle))
+                    .pickerStyle(.menu)
             }
-            Text("설정 기본값: \(model.settings.recognitionSource.title)")
+            Text("설정 기본값: \(model.settings.recognitionSource.title) · \(model.settings.overlayStyle.title)")
                 .font(.caption).foregroundStyle(.secondary)
             Text("앱 텍스트 우선은 프로그램의 글자를 직접 읽고, 사용할 수 없으면 OCR로 전환합니다. 화면 영역은 항상 OCR을 사용합니다.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("여기서 선택한 방식은 현재 인식에만 적용됩니다. 인식을 해제하면 설정 기본값으로 돌아갑니다.")
+            Text("여기서 선택한 읽기 방식과 화면 위 번역은 현재 인식에만 적용됩니다. 인식을 해제하면 설정 기본값으로 돌아갑니다.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()

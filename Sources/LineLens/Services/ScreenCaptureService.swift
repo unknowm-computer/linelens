@@ -16,6 +16,7 @@ final class ScreenCaptureService {
     private let accessProbe: () async throws -> Void
     private let accessReset: () async throws -> Void
     private let windowInfoProvider: WindowInfoProvider
+    private let isWebBrowser: @MainActor (pid_t) -> Bool
     private var accessCheck: Task<Bool, Never>?
     private let logger = Logger(subsystem: "com.linelens.app", category: "ScreenAccess")
     private var lastPreflight: Bool?
@@ -36,10 +37,12 @@ final class ScreenCaptureService {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         guard !content.displays.isEmpty else { throw LineLensError.noDisplay }
     }, accessReset: @escaping () async throws -> Void = ScreenCaptureService.resetSystemPermission,
-         windowInfoProvider: @escaping WindowInfoProvider = ScreenCaptureService.systemWindowInfo) {
+         windowInfoProvider: @escaping WindowInfoProvider = ScreenCaptureService.systemWindowInfo,
+         isWebBrowser: @escaping @MainActor (pid_t) -> Bool = ScreenCaptureService.isBrowserApplication) {
         self.accessProbe = accessProbe
         self.accessReset = accessReset
         self.windowInfoProvider = windowInfoProvider
+        self.isWebBrowser = isWebBrowser
     }
 
     /// CoreGraphics preflight can disagree with ScreenCaptureKit after a permission or signing
@@ -273,21 +276,36 @@ final class ScreenCaptureService {
         return availableFrame(for: target)
     }
 
-    /// Window-only captures omit menus, sheets in other windows and overlapping
-    /// apps. Hide the screenshot rather than painting over those live controls.
-    func isOccluded(_ target: CaptureTarget, rect: CGRect, overlayWindowID: Int?) -> Bool {
-        guard let list = windowInfoProvider([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) else { return true }
+    func isOccluded(_ target: CaptureTarget, rect: CGRect, overlayWindowID: Int?, resultWindowID: Int? = nil) -> Bool {
+        overlayExclusions(for: target, rect: rect, overlayWindowID: overlayWindowID, resultWindowID: resultWindowID)?.isEmpty != true
+    }
+
+    /// Returns the screen rectangles to leave visible. An unavailable or covered
+    /// target returns nil, so the overlay cannot obscure other windows.
+    func overlayExclusions(for target: CaptureTarget, rect: CGRect, overlayWindowID: Int?, resultWindowID: Int? = nil,
+                           excludeBrowserLinkStatus: Bool = false) -> [CGRect]? {
+        guard let list = windowInfoProvider([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) else { return nil }
+        let targetWindow: (number: Int, pid: pid_t, frame: CGRect, layer: Int)?
+        if case .window(let id, let pid, _, _) = target {
+            guard let info = list.first(where: { $0[kCGWindowNumber as String] as? Int == Int(id) }),
+                  let frame = Self.onScreenFrame(info), let layer = info[kCGWindowLayer as String] as? Int else { return nil }
+            targetWindow = (Int(id), pid, frame, layer)
+        } else {
+            targetWindow = nil
+        }
         let ownPID = ProcessInfo.processInfo.processIdentifier
+        var exclusions: [CGRect] = []
         for info in list {
             guard let number = info[kCGWindowNumber as String] as? Int else { continue }
-            if case .window(let id, _, _, _) = target, number == Int(id) { return false }
-            if number == overlayWindowID { continue }
+            if number == targetWindow?.number { return exclusions }
+            if number == overlayWindowID || number == resultWindowID { continue }
             guard let layer = info[kCGWindowLayer as String] as? Int, layer >= 0,
                   (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
                   let rawBounds = info[kCGWindowBounds as String] as? NSDictionary,
                   let frame = CGRect(dictionaryRepresentation: rawBounds),
                   frame.intersects(rect), frame.width > 1, frame.height > 1 else { continue }
-            if let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+            let pid = info[kCGWindowOwnerPID as String] as? pid_t
+            if let pid,
                let app = NSRunningApplication(processIdentifier: pid),
                let bundle = app.bundleIdentifier,
                ["com.apple.dock", "com.apple.WindowManager", "com.apple.screencaptureui"].contains(bundle),
@@ -296,16 +314,41 @@ final class ScreenCaptureService {
                 // on screen even when their visible UI is not being presented.
                 continue
             }
-            if case .region = target {
+            if let targetWindow {
+                // Chrome displays the hovered link's address in a separate
+                // strip attached to the bottom corner of the selected window.
+                guard excludeBrowserLinkStatus, pid == targetWindow.pid, layer == targetWindow.layer,
+                      Self.isBottomStatusWindow(frame, of: targetWindow.frame), isWebBrowser(targetWindow.pid) else { return nil }
+                exclusions.append(frame.intersection(rect))
+            } else {
                 // Other apps are already part of a region capture. Our windows are
                 // excluded from capture and must never be covered by its screenshot.
-                if info[kCGWindowOwnerPID as String] as? pid_t == ownPID { return true }
-            } else {
-                return true
+                if pid == ownPID { return nil }
             }
         }
-        if case .window = target { return true }
-        return false
+        return targetWindow == nil ? exclusions : nil
+    }
+
+    private static func isBottomStatusWindow(_ frame: CGRect, of target: CGRect) -> Bool {
+        let edgeTolerance: CGFloat = 4
+        return frame.height <= 36 && frame.width <= target.width
+            && abs(frame.maxY - target.maxY) <= edgeTolerance
+            && (abs(frame.minX - target.minX) <= edgeTolerance || abs(frame.maxX - target.maxX) <= edgeTolerance)
+    }
+
+    private static func isBrowserApplication(_ pid: pid_t) -> Bool {
+        guard let url = NSRunningApplication(processIdentifier: pid)?.bundleURL,
+              let bundle = Bundle(url: url),
+              let urlTypes = bundle.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]],
+              let documentTypes = bundle.object(forInfoDictionaryKey: "CFBundleDocumentTypes") as? [[String: Any]] else { return false }
+        let schemes = urlTypes.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }.map { $0.lowercased() }
+        guard schemes.contains("http"), schemes.contains("https") else { return false }
+        return documentTypes.contains { type in
+            let identifiers = type["LSItemContentTypes"] as? [String] ?? []
+            let extensions = type["CFBundleTypeExtensions"] as? [String] ?? []
+            let mimeTypes = type["CFBundleTypeMIMETypes"] as? [String] ?? []
+            return identifiers.contains("public.html") || extensions.contains("html") || mimeTypes.contains("text/html")
+        }
     }
 
     /// Keep standard window title-bar controls and the system recording indicator live.

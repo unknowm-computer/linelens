@@ -8,6 +8,11 @@ import Observation
 
 @MainActor @Observable
 final class TranslationEngine {
+    struct LanguageChoices: Sendable {
+        var sources: [String] = []
+        var targets: [String] = []
+    }
+
     struct Job {
         let id = UUID()
         let blocks: [TextBlock]
@@ -40,6 +45,34 @@ final class TranslationEngine {
         let availability = makeAvailability(quality: quality)
         let languages = await availability.supportedLanguages
         return languages.map(\.minimalIdentifier).sorted()
+    }
+
+    nonisolated static func downloadedLanguageChoices(
+        source: String, target: String, languages: [String], quality: TranslationQuality
+    ) async -> LanguageChoices {
+        let availability = makeAvailability(quality: quality)
+        let candidates = languages.map { Locale.Language(identifier: $0) }
+        let selectedTarget = Locale.Language(identifier: target)
+        let possibleSources = source == "auto" ? candidates : [Locale.Language(identifier: source)]
+        var choices = LanguageChoices()
+        for (identifier, candidate) in zip(languages, candidates) {
+            guard !Task.isCancelled else { return LanguageChoices() }
+            if await availability.status(from: candidate, to: selectedTarget) == .installed {
+                choices.sources.append(identifier)
+            }
+        }
+        // With no sample for automatic detection, a target is selectable if it
+        // already has at least one installed source pairing.
+        for (identifier, candidate) in zip(languages, candidates) {
+            for possibleSource in possibleSources {
+                guard !Task.isCancelled else { return LanguageChoices() }
+                if await availability.status(from: possibleSource, to: candidate) == .installed {
+                    choices.targets.append(identifier)
+                    break
+                }
+            }
+        }
+        return choices
     }
 
     func cancel() {

@@ -18,6 +18,8 @@ final class PerformancePipelineTests: XCTestCase {
         XCTAssertEqual(migrated.targetLanguage, "en")
         XCTAssertEqual(migrated.refreshInterval, 5)
         XCTAssertEqual(migrated.presentation, .both)
+        XCTAssertFalse(migrated.excludeBrowserLinkStatus)
+        XCTAssertFalse(migrated.alwaysShowResults)
         XCTAssertNil(migrated.captureShortcut)
         XCTAssertEqual(migrated.ocrMode, .fast)
         XCTAssertEqual(migrated.translationQuality, .speed)
@@ -26,11 +28,24 @@ final class PerformancePipelineTests: XCTestCase {
         customized.translationQuality = .quality
         customized.recognitionSource = .ocr
         customized.livePreview = false
+        customized.excludeBrowserLinkStatus = true
+        customized.alwaysShowResults = true
         XCTAssertEqual(try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(customized)), customized)
         var legacyObject = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(customized)) as? [String: Any])
         legacyObject.removeValue(forKey: "captureShortcut")
         let omittedNil = try JSONDecoder().decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: legacyObject))
         XCTAssertNil(omittedNil.captureShortcut, "Legacy encoders omitted intentionally removed shortcuts")
+    }
+
+    func testAlwaysShowResultsAlsoOpensThePanelInOverlayMode() {
+        var settings = AppSettings()
+        for presentation in ResultPresentation.allCases {
+            settings.presentation = presentation
+            settings.alwaysShowResults = false
+            XCTAssertEqual(settings.showsResultsOnSelection, presentation != .overlay)
+            settings.alwaysShowResults = true
+            XCTAssertTrue(settings.showsResultsOnSelection)
+        }
     }
 
     func testUnknownNewPreferencesFallBackIndependently() throws {

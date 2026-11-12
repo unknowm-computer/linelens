@@ -23,16 +23,36 @@ final class ResultRecognitionOptionsTests: XCTestCase {
         model.setResultRecognitionSource(.ocr)
         model.setRecognitionLanguage("ja")
         model.setResultTargetLanguage("en")
+        model.setResultOverlayStyle(.inPlace)
+        model.setResultDownloadedTranslationLanguagesOnly(true)
         XCTAssertEqual(model.recognitionSettings.recognitionSource, .ocr)
         XCTAssertEqual(model.recognitionSettings.ocrLanguage, "ja-JP")
         XCTAssertEqual(model.recognitionSettings.sourceLanguage, "ja")
         XCTAssertEqual(model.recognitionSettings.targetLanguage, "en")
+        XCTAssertEqual(model.recognitionSettings.overlayStyle, .inPlace)
+        XCTAssertTrue(model.recognitionSettings.downloadedTranslationLanguagesOnly)
         XCTAssertEqual(model.settings, defaults)
         XCTAssertEqual(AppSettings.load(), defaults)
         XCTAssertEqual(UserDefaults.standard.data(forKey: "settings"), saved)
         XCTAssertEqual(AppModel().recognitionSettings, defaults)
         XCTAssertFalse(model.isRefreshMonitoringActive)
         XCTAssertFalse(model.isInputMonitoringActive)
+    }
+
+    @MainActor
+    func testResultOverlayStyleReturnsToLatestDefault() {
+        let original = AppSettings.load()
+        defer { original.save() }
+        let model = model()
+        defer { model.stop() }
+        model.setResultOverlayStyle(.inPlace)
+        model.settings.overlayStyle = .below
+        XCTAssertEqual(model.recognitionSettings.overlayStyle, .inPlace)
+        XCTAssertEqual(AppSettings.load().overlayStyle, .below)
+        let saved = UserDefaults.standard.data(forKey: "settings")
+        model.setResultOverlayStyle(nil)
+        XCTAssertEqual(model.recognitionSettings.overlayStyle, .below)
+        XCTAssertEqual(UserDefaults.standard.data(forKey: "settings"), saved)
     }
 
     @MainActor
@@ -44,20 +64,24 @@ final class ResultRecognitionOptionsTests: XCTestCase {
         model.setResultRecognitionSource(.automatic)
         model.setRecognitionLanguage("ja")
         model.setResultTargetLanguage("en")
+        model.setResultDownloadedTranslationLanguagesOnly(false)
         var defaults = model.settings
         defaults.recognitionSource = .ocr
         defaults.ocrLanguage = "ko-KR"
         defaults.sourceLanguage = "ko"
         defaults.targetLanguage = "ja"
+        defaults.downloadedTranslationLanguagesOnly = true
         model.settings = defaults
         XCTAssertEqual(model.recognitionSettings.recognitionSource, .automatic, "An explicit choice remains local even if the default changes")
         XCTAssertEqual(model.recognitionSettings.sourceLanguage, "ja")
         XCTAssertEqual(model.recognitionSettings.targetLanguage, "en")
+        XCTAssertFalse(model.recognitionSettings.downloadedTranslationLanguagesOnly)
         model.resetResultLanguages()
         XCTAssertFalse(model.resultOptions.hasLanguageOverrides)
         XCTAssertEqual(model.recognitionSettings.ocrLanguage, "ko-KR")
         XCTAssertEqual(model.recognitionSettings.sourceLanguage, "ko")
         XCTAssertEqual(model.recognitionSettings.targetLanguage, "ja")
+        XCTAssertTrue(model.recognitionSettings.downloadedTranslationLanguagesOnly)
         XCTAssertEqual(model.recognitionSettings.recognitionSource, .automatic)
         model.setResultRecognitionSource(nil)
         XCTAssertEqual(model.recognitionSettings, defaults)
@@ -74,6 +98,8 @@ final class ResultRecognitionOptionsTests: XCTestCase {
         model.setResultRecognitionSource(.automatic)
         model.setRecognitionLanguage("en")
         model.setResultTargetLanguage("ja")
+        model.setResultOverlayStyle(.inPlace)
+        model.setResultDownloadedTranslationLanguagesOnly(true)
         let saved = UserDefaults.standard.data(forKey: "settings")
         model.stop()
         XCTAssertEqual(model.resultOptions, ResultRecognitionOptions())

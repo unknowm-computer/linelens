@@ -139,7 +139,7 @@ final class ScrollFadeTests: XCTestCase {
         defer { session.reset() }
         session.observe(source)
         let accepted = await session.accept(capture, blocks: [block])
-        XCTAssertTrue(accepted)
+        XCTAssertNotNil(accepted)
         let firstRender = expectation(description: "Before scroll")
         session.didRender = { firstRender.fulfill() }
         session.prepare(blocks: [block], settings: AppSettings())
@@ -148,10 +148,10 @@ final class ScrollFadeTests: XCTestCase {
         session.reset()
         XCTAssertNil(session.presentation)
         let stale = await session.accept(capture, blocks: [block])
-        XCTAssertFalse(stale)
+        XCTAssertNil(stale)
         session.observe(source)
         let fresh = await session.accept(capture, blocks: [block])
-        XCTAssertTrue(fresh)
+        XCTAssertNotNil(fresh)
         let secondRender = expectation(description: "After scroll, new image")
         session.didRender = { secondRender.fulfill() }
         session.prepare(blocks: [block], settings: AppSettings())
