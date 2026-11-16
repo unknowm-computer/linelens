@@ -12,6 +12,13 @@ struct WindowChoice: Identifiable, Equatable, Sendable {
     var label: String { application.isEmpty ? title : "\(application) — \(title)" }
 }
 
+/// Uncommitted choices shared when switching between direct and list selection.
+/// Cancelling selection discards these values without changing the active session.
+struct WindowSelectionOptions: Equatable {
+    var crop = false
+    var captureMode: WindowCaptureMode?
+}
+
 enum CaptureTarget: Equatable, Sendable {
     case region(displayID: CGDirectDisplayID, rect: CGRect)
     case window(id: CGWindowID, processID: pid_t, title: String, crop: CGRect?)

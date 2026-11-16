@@ -11,11 +11,13 @@ enum ScreenAccessState: Equatable {
 @MainActor @Observable
 final class ScreenCaptureService {
     typealias WindowInfoProvider = (CGWindowListOption, CGWindowID) -> [[String: Any]]?
+    typealias DisplayFramesProvider = @MainActor () -> [(id: CGDirectDisplayID, frame: CGRect)]
 
     private(set) var accessState: ScreenAccessState = .unchecked
     private let accessProbe: () async throws -> Void
     private let accessReset: () async throws -> Void
     private let windowInfoProvider: WindowInfoProvider
+    private let displayFramesProvider: DisplayFramesProvider
     private let isWebBrowser: @MainActor (pid_t) -> Bool
     private var accessCheck: Task<Bool, Never>?
     private let logger = Logger(subsystem: "com.linelens.app", category: "ScreenAccess")
@@ -38,10 +40,12 @@ final class ScreenCaptureService {
         guard !content.displays.isEmpty else { throw LineLensError.noDisplay }
     }, accessReset: @escaping () async throws -> Void = ScreenCaptureService.resetSystemPermission,
          windowInfoProvider: @escaping WindowInfoProvider = ScreenCaptureService.systemWindowInfo,
+         displayFramesProvider: @escaping DisplayFramesProvider = ScreenCaptureService.systemDisplayFrames,
          isWebBrowser: @escaping @MainActor (pid_t) -> Bool = ScreenCaptureService.isBrowserApplication) {
         self.accessProbe = accessProbe
         self.accessReset = accessReset
         self.windowInfoProvider = windowInfoProvider
+        self.displayFramesProvider = displayFramesProvider
         self.isWebBrowser = isWebBrowser
     }
 
@@ -166,7 +170,15 @@ final class ScreenCaptureService {
         }.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
     }
 
-    func capture(_ target: CaptureTarget, continuously: Bool = false) async throws -> CapturedImage {
+    func capture(_ selection: CaptureTarget, continuously: Bool = false,
+                 windowMode: WindowCaptureMode = .direct) async throws -> CapturedImage {
+        let target = try captureTarget(for: selection, windowMode: windowMode)
+        // Display crops are tied to absolute screen coordinates. Never deliver a
+        // frame from the old position after the selected window has moved.
+        let isCurrent: () -> Bool = { [weak self] in
+            guard let self else { return false }
+            return (try? self.captureTarget(for: selection, windowMode: windowMode)) == target
+        }
         if continuously {
             let visibleRect = availableFrame(for: target)
             if let liveCapture, liveCapture.target == target,
@@ -174,6 +186,7 @@ final class ScreenCaptureService {
                 let token = liveCaptureGeneration
                 do {
                     let frame = try await liveCapture.frame()
+                    guard token == liveCaptureGeneration, isCurrent() else { throw CancellationError() }
                     return CapturedImage(image: frame.image, screenRect: visibleRect ?? liveCapture.screenRect, fingerprint: frame.fingerprint, pixels: frame.pixels, sequence: frame.sequence)
                 } catch {
                     if token == liveCaptureGeneration { stopLiveCapture() }
@@ -192,11 +205,11 @@ final class ScreenCaptureService {
             let session = LiveCaptureSession(target: target, screenRect: setup.screenRect)
             liveCapture = session
             session.onFrame = { [weak self] frame in
-                guard let self, self.liveCaptureGeneration == token else { return }
+                guard let self, self.liveCaptureGeneration == token, isCurrent() else { return }
                 self.onFrame?(frame)
             }
             session.onPreview = { [weak self] surface in
-                guard let self, self.liveCaptureGeneration == token else { return }
+                guard let self, self.liveCaptureGeneration == token, isCurrent() else { return }
                 self.onPreview?(surface)
             }
             session.onUnavailable = { [weak self] in
@@ -207,6 +220,7 @@ final class ScreenCaptureService {
                 try await session.start(filter: setup.filter, configuration: setup.configuration)
                 guard token == liveCaptureGeneration else { session.stop(); throw CancellationError() }
                 let frame = try await session.frame()
+                guard token == liveCaptureGeneration, isCurrent() else { throw CancellationError() }
                 return CapturedImage(image: frame.image, screenRect: setup.screenRect, fingerprint: frame.fingerprint, pixels: frame.pixels, sequence: frame.sequence)
             } catch {
                 session.stop()
@@ -217,6 +231,8 @@ final class ScreenCaptureService {
         stopLiveCapture()
         let setup = try await captureSetup(target)
         let image = try await SCScreenshotManager.captureImage(contentFilter: setup.filter, configuration: setup.configuration)
+        try Task.checkCancellation()
+        guard isCurrent() else { throw CancellationError() }
         let pixels = ImagePixels(image)
         let fingerprint = pixels?.fingerprint ?? ImageFingerprint.make(image)
         onFrame?(CapturedFrame(image: image, fingerprint: fingerprint, pixels: pixels))
@@ -270,26 +286,51 @@ final class ScreenCaptureService {
         return (filter, config, screenRect)
     }
 
-    func visibleFrame(for target: CaptureTarget) -> CGRect? {
+    /// Preserve the window selection (including its normalized crop), while
+    /// resolving the display crop anew whenever its position or size changes.
+    func captureTarget(for target: CaptureTarget, windowMode: WindowCaptureMode) throws -> CaptureTarget {
+        guard case .window = target, windowMode == .screenRegion else { return target }
+        guard let rect = availableFrame(for: target) else { throw LineLensError.targetUnavailable }
+        let candidates = displayFramesProvider().compactMap { display -> (CGDirectDisplayID, CGRect)? in
+            let clipped = rect.intersection(display.frame)
+            guard !clipped.isNull, clipped.width >= 8, clipped.height >= 8 else { return nil }
+            return (display.id, clipped)
+        }
+        guard let best = candidates.max(by: { $0.1.width * $0.1.height < $1.1.width * $1.1.height }) else {
+            throw LineLensError.noDisplay
+        }
+        return .region(displayID: best.0, rect: best.1)
+    }
+
+    func visibleFrame(for target: CaptureTarget, windowMode: WindowCaptureMode = .direct) -> CGRect? {
         // An inactive window can remain fully visible beside the active app.
         // Actual overlap is checked separately by isOccluded, not by focus.
+        if case .window = target, windowMode == .screenRegion {
+            guard let resolved = try? captureTarget(for: target, windowMode: windowMode),
+                  case .region(_, let rect) = resolved else { return nil }
+            return rect
+        }
         return availableFrame(for: target)
     }
 
-    func isOccluded(_ target: CaptureTarget, rect: CGRect, overlayWindowID: Int?, resultWindowID: Int? = nil) -> Bool {
-        overlayExclusions(for: target, rect: rect, overlayWindowID: overlayWindowID, resultWindowID: resultWindowID)?.isEmpty != true
+    func isOccluded(_ target: CaptureTarget, rect: CGRect, overlayWindowID: Int?, resultWindowID: Int? = nil,
+                    windowMode: WindowCaptureMode = .direct) -> Bool {
+        overlayExclusions(for: target, rect: rect, overlayWindowID: overlayWindowID, resultWindowID: resultWindowID,
+                          windowMode: windowMode)?.isEmpty != true
     }
 
     /// Returns the screen rectangles to leave visible. An unavailable or covered
     /// target returns nil, so the overlay cannot obscure other windows.
     func overlayExclusions(for target: CaptureTarget, rect: CGRect, overlayWindowID: Int?, resultWindowID: Int? = nil,
-                           excludeBrowserLinkStatus: Bool = false) -> [CGRect]? {
+                           excludeBrowserLinkStatus: Bool = false, windowMode: WindowCaptureMode = .direct) -> [CGRect]? {
         guard let list = windowInfoProvider([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) else { return nil }
         let targetWindow: (number: Int, pid: pid_t, frame: CGRect, layer: Int)?
         if case .window(let id, let pid, _, _) = target {
             guard let info = list.first(where: { $0[kCGWindowNumber as String] as? Int == Int(id) }),
                   let frame = Self.onScreenFrame(info), let layer = info[kCGWindowLayer as String] as? Int else { return nil }
-            targetWindow = (Int(id), pid, frame, layer)
+            // A tracked screen region already contains other apps and popups.
+            // Only our excluded windows need the existing region visibility rule.
+            targetWindow = windowMode == .direct ? (Int(id), pid, frame, layer) : nil
         } else {
             targetWindow = nil
         }
@@ -354,9 +395,9 @@ final class ScreenCaptureService {
     /// Keep standard window title-bar controls and the system recording indicator live.
     /// Crops starting below the title bar need no exclusion.
     func overlayTopInset(for target: CaptureTarget, rect: CGRect) -> CGFloat {
-        guard case .window(let id, _, _, let crop) = target else { return 0 }
-        let offset = (crop?.minY ?? 0) * (Self.windowFrame(id: id)?.height ?? rect.height)
-        return min(rect.height, max(0, 32 - offset))
+        guard case .window(let id, _, _, _) = target,
+              let frame = Self.onScreenFrame(windowInfoProvider([.optionIncludingWindow], id)?.first) else { return 0 }
+        return min(rect.height, max(0, frame.minY + 32 - rect.minY))
     }
 
     func overlayLevel(for target: CaptureTarget) -> NSWindow.Level {
@@ -380,6 +421,13 @@ final class ScreenCaptureService {
 
     static func windowFrame(id: CGWindowID) -> CGRect? {
         onScreenFrame(systemWindowInfo([.optionIncludingWindow], id)?.first)
+    }
+
+    private static func systemDisplayFrames() -> [(id: CGDirectDisplayID, frame: CGRect)] {
+        NSScreen.screens.compactMap { screen in
+            guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { return nil }
+            return (id, CGDisplayBounds(id))
+        }
     }
 
     private nonisolated static func systemWindowInfo(_ options: CGWindowListOption, _ id: CGWindowID) -> [[String: Any]]? {

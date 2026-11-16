@@ -10,11 +10,31 @@ struct ResultsView: View {
     @State private var isChoosingRecognition = false
 
     var body: some View {
+        let translationConfiguration = model.translation.configuration
         VStack(spacing: 0) {
             header
             Divider()
             if let error = model.errorMessage { message(error, symbol: "exclamationmark.triangle", color: .orange) }
-            if let message = model.translation.message { self.message(message, symbol: "globe", color: .secondary) }
+            if let message = model.translation.message {
+                if let offer = model.translation.downloadOffer, !model.translation.isWorking {
+                    HStack(spacing: 12) {
+                        Label {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(message)
+                                Text("\(languageName(offer.source)) → \(languageName(offer.target))")
+                            }
+                        } icon: { Image(systemName: "globe") }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                        Button("모델 다운로드…") { model.translation.requestLanguageDownload() }
+                    }
+                    .padding(12)
+                    .background(.secondary.opacity(0.08))
+                } else {
+                    self.message(message, symbol: "globe", color: .secondary)
+                }
+            }
             if model.blocks.isEmpty {
                 ContentUnavailableView(
                     model.hasTarget ? "인식 결과를 기다리고 있습니다" : "화면의 글자를 읽어보세요",
@@ -66,7 +86,8 @@ struct ResultsView: View {
             footer
         }
         .frame(minWidth: 360, minHeight: 320)
-        .translationTask(model.translation.configuration) { session in
+        .translationTask(translationConfiguration) { session in
+            guard translationConfiguration == model.translation.configuration else { return }
             await model.translation.run(using: session)
         }
         .sheet(item: $editingBlock) { block in

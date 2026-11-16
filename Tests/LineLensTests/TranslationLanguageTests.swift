@@ -42,6 +42,51 @@ final class TranslationLanguageTests: XCTestCase {
         XCTAssertEqual(TranslationEngine.resolvedSourceLanguage("ko", context: "English text"), "ko")
         XCTAssertEqual(TranslationEngine.resolvedSourceLanguage("auto", context: ""), "auto")
     }
+
+    @MainActor
+    func testAutomaticTranslationDoesNotReopenDownloadAfterCancellation() async {
+        let engine = TranslationEngine()
+        var prepareCount = 0
+        func recognize(_ source: String) {
+            engine.submit(blocks: [TextBlock(source: source, rect: .zero, confidence: 1)],
+                          settings: AppSettings(), sourceContext: "Open the application settings.") { _ in }
+        }
+        func runMissingModel() async {
+            await engine.run(checkAvailability: { _ in .supported }, prepare: {
+                prepareCount += 1
+                throw CocoaError(.userCancelled)
+            }, translate: { _ in
+                XCTFail("Missing or cancelled models must not start translation")
+                throw CancellationError()
+            })
+        }
+
+        recognize("Page 12")
+        await runMissingModel()
+        XCTAssertEqual(prepareCount, 0)
+        XCTAssertEqual(engine.downloadOffer?.source, "en")
+        XCTAssertEqual(engine.downloadOffer?.target, "ko")
+
+        engine.requestLanguageDownload()
+        // A new OCR result can be queued while the system prompt is being cancelled.
+        engine.didFinish = {
+            engine.didFinish = nil
+            recognize("Page 13")
+        }
+        await runMissingModel()
+        XCTAssertEqual(prepareCount, 1)
+        XCTAssertEqual(engine.message, "시스템 다운로드 창을 닫았습니다.")
+        await runMissingModel()
+        XCTAssertEqual(prepareCount, 1)
+        XCTAssertFalse(engine.isWorking)
+        XCTAssertNil(engine.configuration)
+
+        engine.requestLanguageDownload()
+        await runMissingModel()
+        XCTAssertEqual(prepareCount, 2, "An explicit request can open the prompt again")
+        engine.cancel()
+        XCTAssertNil(engine.downloadOffer)
+    }
     @MainActor
     func testInstalledLocalTranslationHandlesSuccessiveShortLabelChanges() async throws {
         guard #available(macOS 26, *) else { throw XCTSkip("Direct installed sessions require macOS 26") }

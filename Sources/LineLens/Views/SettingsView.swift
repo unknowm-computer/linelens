@@ -12,6 +12,17 @@ struct SettingsView: View {
             Section("일반") {
                 LaunchAtLoginSettingsView(service: model.launchAtLogin)
             }
+            Section("프로그램 창 캡처") {
+                Picker("캡처 방식", selection: $model.settings.windowCaptureMode) {
+                    ForEach(WindowCaptureMode.allCases) { Text($0.title).tag($0) }
+                }
+                Text("창 직접 캡처는 선택한 창의 내용을 가져옵니다. 창 영역 캡처는 창의 이동·크기 변경을 따라가며 실제 화면에 보이는 영역을 OCR로 읽습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if model.settings.windowCaptureMode == .screenRegion {
+                    Text("겹친 팝업과 다른 창도 포함됩니다. 창 내부의 일부 영역 선택에도 적용되며, 여러 모니터에 걸치면 선택 영역이 가장 많이 보이는 모니터를 사용합니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("인식 및 번역") {
                 Picker("텍스트 읽기", selection: $model.settings.recognitionSource) {
                     ForEach(TextRecognitionSource.allCases) { Text($0.title).tag($0) }
@@ -40,7 +51,7 @@ struct SettingsView: View {
                     TranslationLanguagePickers(source: $model.settings.sourceLanguage, target: $model.settings.targetLanguage,
                         choices: choices)
                 }
-                Text("번역은 기기에서 처리합니다. 언어 모델이 없으면 최초 다운로드를 위한 시스템 안내가 표시됩니다.")
+                Text("번역은 기기에서 처리합니다. 언어 모델이 필요하면 결과 창에서 다운로드할 수 있습니다.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("갱신 및 표시") {
@@ -68,8 +79,8 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Toggle("브라우저 링크 주소 표시 영역 제외", isOn: $model.settings.excludeBrowserLinkStatus)
-                    .disabled(model.settings.presentation == .panel)
-                Text("브라우저 창을 번역할 때 링크 주소와 겹치는 부분만 비우고 나머지 번역은 유지합니다.")
+                    .disabled(model.settings.presentation == .panel || model.settings.windowCaptureMode == .screenRegion)
+                Text("창 직접 캡처에서 링크 주소와 겹치는 부분만 비웁니다. 창 영역 캡처는 링크 주소를 화면 내용에 포함합니다.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("번역 화면은 클릭과 스크롤을 통과시킵니다.")
                     .font(.caption).foregroundStyle(.secondary)

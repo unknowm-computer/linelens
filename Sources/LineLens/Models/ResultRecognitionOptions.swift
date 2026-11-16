@@ -6,6 +6,7 @@ struct ResultRecognitionOptions: Equatable {
     var targetLanguage: String?
     var downloadedTranslationLanguagesOnly: Bool?
     var overlayStyle: OverlayStyle?
+    var windowCaptureMode: WindowCaptureMode?
 
     var hasLanguageOverrides: Bool {
         recognitionLanguage != nil || targetLanguage != nil || downloadedTranslationLanguagesOnly != nil
@@ -21,6 +22,7 @@ struct ResultRecognitionOptions: Equatable {
         if let targetLanguage { effective.targetLanguage = targetLanguage }
         if let downloadedTranslationLanguagesOnly { effective.downloadedTranslationLanguagesOnly = downloadedTranslationLanguagesOnly }
         if let overlayStyle { effective.overlayStyle = overlayStyle }
+        if let windowCaptureMode { effective.windowCaptureMode = windowCaptureMode }
         return effective
     }
 }

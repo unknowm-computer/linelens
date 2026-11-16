@@ -3,10 +3,10 @@ import SwiftUI
 
 struct WindowPickerView: View {
     @Bindable var model: AppModel
+    @State var options: WindowSelectionOptions
     let onClose: () -> Void
     @State private var windows: [WindowChoice] = []
     @State private var selected: CGWindowID?
-    @State private var crop = false
     @State private var search = ""
     @State private var isLoading = false
     @State private var error: String?
@@ -17,7 +17,11 @@ struct WindowPickerView: View {
                 Text("화면에서 창을 직접 클릭해 선택할 수도 있습니다.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("화면에서 선택") { onClose(); model.chooseWindow() }
+                Button("화면에서 선택") {
+                    let selection = options
+                    onClose()
+                    model.chooseWindow(options: selection)
+                }
             }
             HStack {
                 TextField("프로그램 또는 창 제목 검색", text: $search)
@@ -39,15 +43,22 @@ struct WindowPickerView: View {
                     }.padding(.vertical, 4).tag(window.id)
                 }
             }
-            Toggle("선택한 창의 일부 영역만 인식", isOn: $crop)
+            Toggle("선택한 창의 일부 영역만 인식", isOn: $options.crop)
+            HStack {
+                WindowCaptureModePicker(selection: $options.captureMode, defaultMode: model.settings.windowCaptureMode)
+                Spacer()
+                Text("현재 인식에만 적용 · 설정에 저장하지 않음")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Text("창은 사용자가 인식 해제할 때까지 유지됩니다.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("닫기") { onClose(); model.cancelSelection() }
-                Button(crop ? "영역 지정" : "인식 시작") {
+                Button(options.crop ? "영역 지정" : "인식 시작") {
                     guard let window = windows.first(where: { $0.id == selected }) else { return }
+                    let selection = options
                     onClose()
-                    model.selectWindow(window, crop: crop)
+                    model.selectWindow(window, crop: selection.crop, captureMode: selection.captureMode)
                 }.buttonStyle(.borderedProminent).disabled(selected == nil)
             }
         }.padding(20).frame(minWidth: 500, minHeight: 360).task { await load() }

@@ -89,10 +89,10 @@ final class AppWindows: NSObject, NSWindowDelegate {
 
     func dismissWelcome() { welcome?.close() }
 
-    func showWindowPicker() {
+    func showWindowPicker(options: WindowSelectionOptions) {
         closeWindowPicker()
         picker = makeWindow(title: "인식할 프로그램 창 선택", size: NSSize(width: 560, height: 460),
-                            view: WindowPickerView(model: model) { [weak self] in self?.closeWindowPicker() })
+                            view: WindowPickerView(model: model, options: options) { [weak self] in self?.closeWindowPicker() })
         picker?.delegate = self
         present(picker)
     }

@@ -57,11 +57,18 @@ enum TextRecognitionSource: String, CaseIterable, Codable, Identifiable, Sendabl
     var title: String { self == .automatic ? "자동 · 앱 텍스트 우선" : "화면 OCR" }
 }
 
+enum WindowCaptureMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case direct, screenRegion
+    var id: String { rawValue }
+    var title: String { self == .direct ? "창 직접 캡처" : "창 영역 캡처" }
+}
+
 struct AppSettings: Codable, Equatable {
     var translationEnabled = true
     var ocrLanguage = "auto"
     var ocrMode: OCRMode = .fast
     var recognitionSource: TextRecognitionSource = .automatic
+    var windowCaptureMode: WindowCaptureMode = .direct
     var translationQuality: TranslationQuality = .speed
     var livePreview = true
     var sourceLanguage = "auto"
@@ -97,6 +104,7 @@ extension AppSettings {
         case translationEnabled, ocrLanguage, ocrMode, recognitionSource, translationQuality, livePreview
         case sourceLanguage, targetLanguage, automaticRefresh, refreshInterval, presentation, overlayStyle
         case downloadedTranslationLanguagesOnly
+        case windowCaptureMode
         case excludeBrowserLinkStatus, alwaysShowResults, pinResults, captureShortcut, stopShortcut
     }
 
@@ -107,6 +115,7 @@ extension AppSettings {
         ocrLanguage = try values.decodeIfPresent(String.self, forKey: .ocrLanguage) ?? ocrLanguage
         ocrMode = (try values.decodeIfPresent(String.self, forKey: .ocrMode)).flatMap(OCRMode.init(rawValue:)) ?? .fast
         recognitionSource = (try values.decodeIfPresent(String.self, forKey: .recognitionSource)).flatMap(TextRecognitionSource.init(rawValue:)) ?? .automatic
+        windowCaptureMode = (try values.decodeIfPresent(String.self, forKey: .windowCaptureMode)).flatMap(WindowCaptureMode.init(rawValue:)) ?? .direct
         translationQuality = (try values.decodeIfPresent(String.self, forKey: .translationQuality)).flatMap(TranslationQuality.init(rawValue:)) ?? .speed
         livePreview = try values.decodeIfPresent(Bool.self, forKey: .livePreview) ?? livePreview
         sourceLanguage = try values.decodeIfPresent(String.self, forKey: .sourceLanguage) ?? sourceLanguage
@@ -132,6 +141,7 @@ extension AppSettings {
         try values.encode(ocrLanguage, forKey: .ocrLanguage)
         try values.encode(ocrMode, forKey: .ocrMode)
         try values.encode(recognitionSource, forKey: .recognitionSource)
+        try values.encode(windowCaptureMode, forKey: .windowCaptureMode)
         try values.encode(translationQuality, forKey: .translationQuality)
         try values.encode(livePreview, forKey: .livePreview)
         try values.encode(sourceLanguage, forKey: .sourceLanguage)

@@ -13,12 +13,17 @@ final class TranslationEngine {
         var targets: [String] = []
     }
 
-    struct Job {
-        let id = UUID()
-        let blocks: [TextBlock]
+    struct LanguagePair: Equatable {
         let source: String
         let target: String
         let quality: TranslationQuality
+    }
+
+    private struct Job {
+        var id = UUID()
+        var allowsDownload = false
+        let blocks: [TextBlock]
+        let languages: LanguagePair
         let preserved: [UUID: String]
         let completion: ([UUID: String]) -> Void
     }
@@ -26,6 +31,7 @@ final class TranslationEngine {
     var configuration: TranslationSession.Configuration?
     var isWorking = false
     var message: String?
+    private(set) var downloadOffer: LanguagePair?
     var supportedLanguages: [String] = []
     var needsPresentation: (() -> Void)?
     var didFinish: (() -> Void)?
@@ -80,6 +86,14 @@ final class TranslationEngine {
         configuration = nil
         isWorking = false
         message = nil
+        downloadOffer = nil
+    }
+
+    func requestLanguageDownload() {
+        guard !isWorking, var pending = job, downloadOffer == pending.languages else { return }
+        pending.id = UUID()
+        pending.allowsDownload = true
+        start(pending)
     }
 
     func submit(blocks: [TextBlock], settings: AppSettings, sourceContext: String? = nil, completion: @escaping ([UUID: String]) -> Void) {
@@ -99,8 +113,8 @@ final class TranslationEngine {
         if settings.sourceLanguage == "auto", Self.languageCode(source) == Self.languageCode(settings.targetLanguage) {
             source = Self.resolvedSourceLanguage("auto", context: translatable.map(\.source).joined(separator: "\n"))
         }
-        let next = Job(blocks: translatable, source: source, target: settings.targetLanguage, quality: settings.translationQuality,
-                       preserved: preserved, completion: completion)
+        let languages = LanguagePair(source: source, target: settings.targetLanguage, quality: settings.translationQuality)
+        let next = Job(blocks: translatable, languages: languages, preserved: preserved, completion: completion)
         var cached = preserved
         for block in translatable {
             if let value = cache[cacheKey(block.source, job: next)] { cached[block.id] = value }
@@ -112,10 +126,15 @@ final class TranslationEngine {
             completion(cached)
             return
         }
+        start(next)
+    }
+
+    private func start(_ next: Job) {
+        if downloadOffer != next.languages { downloadOffer = nil }
+        if downloadOffer == nil || next.allowsDownload { message = nil }
         job = next
         isWorking = true
-        message = nil
-        var config = Self.makeConfiguration(source: next.source, target: next.target, quality: next.quality)
+        var config = Self.makeConfiguration(source: next.languages.source, target: next.languages.target, quality: next.languages.quality)
         if let old = lastConfiguration, old.source == config.source, old.target == config.target {
             let sameStrategy: Bool
             if #available(macOS 26.4, *) { sameStrategy = old.preferredStrategy == config.preferredStrategy }
@@ -127,13 +146,25 @@ final class TranslationEngine {
     }
 
     func run(using session: TranslationSession) async {
-        guard let current = job else { return }
+        await run(checkAvailability: Self.languageStatus,
+                  prepare: { try await session.prepareTranslation() },
+                  translate: { session.translate(batch: $0) })
+    }
+
+    func run(
+        checkAvailability: (LanguagePair) async -> LanguageAvailability.Status,
+        prepare: () async throws -> Void,
+        translate: ([TranslationSession.Request]) throws -> TranslationSession.BatchResponse
+    ) async {
+        guard let current = job, isWorking else { return }
         defer {
             if job?.id == current.id {
+                configuration = nil
                 isWorking = false
                 didFinish?()
             }
         }
+        var requestedDownload = false
         do {
             var values = current.preserved
             let pending = current.blocks.filter { block in
@@ -142,29 +173,36 @@ final class TranslationEngine {
             }
             if !values.isEmpty { current.completion(values) }
             if !pending.isEmpty {
-                let availability = Self.makeAvailability(quality: current.quality)
-                let status: LanguageAvailability.Status
-                if current.source == "auto" {
-                    status = try await availability.status(for: pending.map(\.source).joined(separator: "\n"),
-                                                           to: Locale.Language(identifier: current.target))
-                } else {
-                    status = await availability.status(from: Locale.Language(identifier: current.source),
-                                                       to: Locale.Language(identifier: current.target))
+                guard current.languages.source != "auto" else {
+                    message = "원문 언어를 감지하지 못했습니다. 결과 창에서 인식 언어를 선택해 주세요."
+                    needsPresentation?()
+                    return
                 }
+                let status = await checkAvailability(current.languages)
                 guard isCurrent(current) else { return }
                 switch status {
                 case .unsupported: throw LineLensError.unsupportedTranslation
                 case .supported:
-                    message = "번역 언어 모델을 다운로드해야 합니다. 시스템 안내를 확인해 주세요."
-                    needsPresentation?()
-                    try await session.prepareTranslation()
+                    let isNewOffer = downloadOffer != current.languages
+                    downloadOffer = current.languages
+                    guard current.allowsDownload else {
+                        if isNewOffer || message == nil { message = "이 언어 조합을 번역하려면 모델 다운로드가 필요합니다." }
+                        if isNewOffer { needsPresentation?() }
+                        return
+                    }
+                    requestedDownload = true
+                    message = "시스템 다운로드 안내를 확인해 주세요."
+                    try await prepare()
+                    try Task.checkCancellation()
                 case .installed: break
                 @unknown default: throw LineLensError.unsupportedTranslation
                 }
                 guard isCurrent(current) else { return }
+                downloadOffer = nil
+                message = nil
                 let requests = pending.map { TranslationSession.Request(sourceText: $0.source, clientIdentifier: $0.id.uuidString) }
                 var lastPublished = Date.distantPast
-                for try await response in session.translate(batch: requests) {
+                for try await response in try translate(requests) {
                     guard isCurrent(current) else { return }
                     if let identifier = response.clientIdentifier, let id = UUID(uuidString: identifier) {
                         values[id] = response.targetText
@@ -179,16 +217,27 @@ final class TranslationEngine {
             }
             guard isCurrent(current) else { return }
             current.completion(values)
-            isWorking = false
             message = nil
         } catch {
             guard job?.id == current.id else { return }
-            isWorking = false
-            if !Task.isCancelled {
+            if requestedDownload {
+                downloadOffer = current.languages
+                if Task.isCancelled || error is CancellationError || (error as? CocoaError)?.code == .userCancelled {
+                    message = "시스템 다운로드 창을 닫았습니다."
+                } else {
+                    message = "번역 모델을 준비하지 못했습니다. \(error.localizedDescription)"
+                }
+            } else if !Task.isCancelled {
+                downloadOffer = nil
                 message = "번역하지 못했습니다. \(error.localizedDescription) 원문은 계속 확인할 수 있습니다."
                 needsPresentation?()
             }
         }
+    }
+
+    private nonisolated static func languageStatus(_ pair: LanguagePair) async -> LanguageAvailability.Status {
+        await makeAvailability(quality: pair.quality).status(from: Locale.Language(identifier: pair.source),
+                                                           to: Locale.Language(identifier: pair.target))
     }
 
     static var supportsQualitySelection: Bool {
@@ -229,5 +278,7 @@ final class TranslationEngine {
     }
 
     private func isCurrent(_ value: Job) -> Bool { job?.id == value.id && !Task.isCancelled }
-    private func cacheKey(_ text: String, job: Job) -> String { "\(job.quality.rawValue)|\(job.source)|\(job.target)|\(text)" }
+    private func cacheKey(_ text: String, job: Job) -> String {
+        "\(job.languages.quality.rawValue)|\(job.languages.source)|\(job.languages.target)|\(text)"
+    }
 }

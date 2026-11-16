@@ -3,6 +3,90 @@ import LineLensCore
 @testable import LineLens
 
 final class ResultRecognitionOptionsTests: XCTestCase {
+    private var windowChoice: WindowChoice {
+        WindowChoice(id: 42, processID: -1, application: "Test", title: "Unavailable test window",
+                     frame: CGRect(x: 100, y: 100, width: 400, height: 300))
+    }
+
+    @MainActor
+    private func windowSelectionModel() -> AppModel {
+        // Keep these state tests independent of real windows and screen permissions.
+        let model = AppModel(capture: ScreenCaptureService(accessProbe: {}, windowInfoProvider: { _, _ in [] }))
+        model.settings = AppSettings()
+        return model
+    }
+
+    @MainActor
+    func testWindowCaptureSelectionOverridesDefaultsWithoutSavingAndStopResetsIt() {
+        let original = AppSettings.load()
+        defer { original.save() }
+        let model = windowSelectionModel()
+        defer { model.stop() }
+        for mode in WindowCaptureMode.allCases {
+            model.stop()
+            model.settings.windowCaptureMode = mode == .direct ? .screenRegion : .direct
+            let defaults = model.settings
+            let saved = UserDefaults.standard.data(forKey: "settings")
+            model.selectWindow(windowChoice, crop: false, captureMode: mode)
+            XCTAssertEqual(model.resultOptions.windowCaptureMode, mode)
+            XCTAssertEqual(model.recognitionSettings.windowCaptureMode, mode)
+            XCTAssertEqual(model.usesWindowScreenRegion, mode == .screenRegion)
+            XCTAssertEqual(model.settings, defaults)
+            XCTAssertEqual(UserDefaults.standard.data(forKey: "settings"), saved)
+            XCTAssertEqual(AppModel().recognitionSettings.windowCaptureMode, defaults.windowCaptureMode)
+            model.togglePause()
+            XCTAssertEqual(model.recognitionSettings.windowCaptureMode, mode)
+            model.stop()
+            XCTAssertNil(model.resultOptions.windowCaptureMode)
+            XCTAssertEqual(model.recognitionSettings, defaults)
+            XCTAssertEqual(UserDefaults.standard.data(forKey: "settings"), saved)
+        }
+    }
+
+    @MainActor
+    func testWindowCaptureDefaultChoiceFollowsSettingsAndDoesNotResetOtherOverrides() {
+        let original = AppSettings.load()
+        defer { original.save() }
+        let model = windowSelectionModel()
+        defer { model.stop() }
+        model.setResultTargetLanguage("ja")
+        model.setResultOverlayStyle(.inPlace)
+        model.selectWindow(windowChoice, crop: false, captureMode: .screenRegion)
+        model.settings.windowCaptureMode = .screenRegion
+        model.settings.windowCaptureMode = .direct
+        XCTAssertEqual(model.recognitionSettings.windowCaptureMode, .screenRegion,
+                       "An explicit session choice must survive changes to the saved default")
+        let saved = UserDefaults.standard.data(forKey: "settings")
+        model.selectWindow(windowChoice, crop: false, captureMode: nil)
+        XCTAssertEqual(model.recognitionSettings.windowCaptureMode, .direct)
+        XCTAssertNil(model.resultOptions.windowCaptureMode)
+        XCTAssertEqual(model.recognitionSettings.targetLanguage, "ja")
+        XCTAssertEqual(model.recognitionSettings.overlayStyle, .inPlace)
+        XCTAssertEqual(UserDefaults.standard.data(forKey: "settings"), saved)
+        model.settings.windowCaptureMode = .screenRegion
+        XCTAssertEqual(model.recognitionSettings.windowCaptureMode, .screenRegion)
+    }
+
+    @MainActor
+    func testCancelledInnerCropDoesNotCommitPendingCaptureMode() async throws {
+        let original = AppSettings.load()
+        defer { original.save() }
+        let model = windowSelectionModel()
+        defer { model.stop() }
+        model.selectWindow(windowChoice, crop: false, captureMode: .screenRegion)
+        let target = model.target
+        let saved = UserDefaults.standard.data(forKey: "settings")
+        model.selectWindow(windowChoice, crop: true, captureMode: .direct)
+        XCTAssertTrue(model.isSelecting)
+        XCTAssertEqual(model.resultOptions.windowCaptureMode, .screenRegion)
+        model.cancelSelection()
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(model.isSelecting)
+        XCTAssertEqual(model.target, target)
+        XCTAssertEqual(model.recognitionSettings.windowCaptureMode, .screenRegion)
+        XCTAssertEqual(UserDefaults.standard.data(forKey: "settings"), saved)
+    }
+
     @MainActor
     private func model() -> AppModel {
         let model = AppModel()

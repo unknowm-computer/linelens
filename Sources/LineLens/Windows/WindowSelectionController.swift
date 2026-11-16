@@ -11,15 +11,16 @@ final class WindowSelectionController {
     private var timer: Timer?
     private var screenObserver: (any NSObjectProtocol)?
     private var state = WindowSelectionState()
-    private var onSelect: ((WindowChoice, Bool) -> Void)?
+    private var onSelect: ((WindowChoice, WindowSelectionOptions) -> Void)?
     private var onCancel: (() -> Void)?
-    private var onShowList: (() -> Void)?
+    private var onShowList: ((WindowSelectionOptions) -> Void)?
 
-    func begin(windows: [WindowChoice], onSelect: @escaping (WindowChoice, Bool) -> Void,
-               onCancel: @escaping () -> Void, onShowList: @escaping () -> Void) {
+    func begin(windows: [WindowChoice], options: WindowSelectionOptions, defaultCaptureMode: WindowCaptureMode,
+               onSelect: @escaping (WindowChoice, WindowSelectionOptions) -> Void,
+               onCancel: @escaping () -> Void, onShowList: @escaping (WindowSelectionOptions) -> Void) {
         cancel()
         candidates = Dictionary(windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        state = WindowSelectionState()
+        state = WindowSelectionState(options: options)
         self.onSelect = onSelect
         self.onCancel = onCancel
         self.onShowList = onShowList
@@ -28,13 +29,13 @@ final class WindowSelectionController {
             let screenFrame = CaptureGeometry.flipScreenRect(screen.frame, mainDisplayHeight: mainHeight)
             let view = WindowSelectionView(frame: CGRect(origin: .zero, size: screen.frame.size),
                                            screenFrame: screenFrame)
-            let toolbar = NSHostingView(rootView: WindowSelectionToolbar(state: state,
+            let toolbar = NSHostingView(rootView: WindowSelectionToolbar(state: state, defaultCaptureMode: defaultCaptureMode,
                 cancel: { [weak self] in self?.finishCancellation() },
                 showList: { [weak self] in self?.finishWithList() }))
             let toolbarWidth = min(620, max(300, screen.frame.width - 48))
             let topInset = max(16, screen.frame.maxY - screen.visibleFrame.maxY + 12)
             toolbar.frame = CGRect(x: (view.bounds.width - toolbarWidth) / 2,
-                                   y: topInset, width: toolbarWidth, height: 112)
+                                   y: topInset, width: toolbarWidth, height: 148)
             view.addSubview(toolbar)
             view.toolbarFrame = toolbar.frame
             view.onClick = { [weak self] point in self?.select(at: point) }
@@ -101,9 +102,9 @@ final class WindowSelectionController {
         // Resolve again at mouse-up rather than committing a stale hover target.
         guard let choice = candidate(at: point) else { return }
         let completion = onSelect
-        let crop = state.crop
+        let options = state.options
         cancel()
-        completion?(choice, crop)
+        completion?(choice, options)
     }
 
     private func finishCancellation() {
@@ -114,8 +115,9 @@ final class WindowSelectionController {
 
     private func finishWithList() {
         let completion = onShowList
+        let options = state.options
         cancel()
-        completion?()
+        completion?(options)
     }
 
     func cancel() {
@@ -136,7 +138,9 @@ final class WindowSelectionController {
 @MainActor @Observable
 private final class WindowSelectionState {
     var hovered: WindowChoice?
-    var crop = false
+    var options: WindowSelectionOptions
+
+    init(options: WindowSelectionOptions = WindowSelectionOptions()) { self.options = options }
 }
 
 private final class WindowSelectionPanel: NSPanel {
@@ -147,6 +151,7 @@ private final class WindowSelectionPanel: NSPanel {
 
 private struct WindowSelectionToolbar: View {
     @Bindable var state: WindowSelectionState
+    let defaultCaptureMode: WindowCaptureMode
     let cancel: () -> Void
     let showList: () -> Void
 
@@ -159,12 +164,18 @@ private struct WindowSelectionToolbar: View {
                 Button("취소", action: cancel)
             }
             HStack {
-                Picker("인식 범위", selection: $state.crop) {
+                Picker("인식 범위", selection: $state.options.crop) {
                     Text("전체 창").tag(false)
                     Text("창 내부 영역").tag(true)
                 }.pickerStyle(.segmented).labelsHidden().frame(width: 230)
                 Text(state.hovered?.label ?? "선택할 창에 마우스를 올리세요")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            HStack(spacing: 12) {
+                WindowCaptureModePicker(selection: $state.options.captureMode, defaultMode: defaultCaptureMode)
+                Spacer(minLength: 0)
+                Text("현재 인식에만 적용 · 설정에 저장하지 않음")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(16)

@@ -11,6 +11,7 @@ final class PerformancePipelineTests: XCTestCase {
         XCTAssertEqual(defaults.ocrMode, .fast)
         XCTAssertEqual(defaults.translationQuality, .speed)
         XCTAssertEqual(defaults.recognitionSource, .automatic)
+        XCTAssertEqual(defaults.windowCaptureMode, .direct)
         XCTAssertTrue(defaults.livePreview)
         let old = Data(#"{"ocrLanguage":"ja-JP","targetLanguage":"en","refreshInterval":5,"presentation":"both","captureShortcut":null}"#.utf8)
         let migrated = try JSONDecoder().decode(AppSettings.self, from: old)
@@ -19,6 +20,7 @@ final class PerformancePipelineTests: XCTestCase {
         XCTAssertEqual(migrated.refreshInterval, 5)
         XCTAssertEqual(migrated.presentation, .both)
         XCTAssertFalse(migrated.excludeBrowserLinkStatus)
+        XCTAssertEqual(migrated.windowCaptureMode, .direct)
         XCTAssertFalse(migrated.alwaysShowResults)
         XCTAssertNil(migrated.captureShortcut)
         XCTAssertEqual(migrated.ocrMode, .fast)
@@ -27,6 +29,7 @@ final class PerformancePipelineTests: XCTestCase {
         customized.ocrMode = .accurate
         customized.translationQuality = .quality
         customized.recognitionSource = .ocr
+        customized.windowCaptureMode = .screenRegion
         customized.livePreview = false
         customized.excludeBrowserLinkStatus = true
         customized.alwaysShowResults = true
@@ -49,11 +52,12 @@ final class PerformancePipelineTests: XCTestCase {
     }
 
     func testUnknownNewPreferencesFallBackIndependently() throws {
-        let data = Data(#"{"ocrMode":"future","translationQuality":"future","recognitionSource":"future","targetLanguage":"ja"}"#.utf8)
+        let data = Data(#"{"ocrMode":"future","translationQuality":"future","recognitionSource":"future","windowCaptureMode":"future","targetLanguage":"ja"}"#.utf8)
         let settings = try JSONDecoder().decode(AppSettings.self, from: data)
         XCTAssertEqual(settings.ocrMode, .fast)
         XCTAssertEqual(settings.translationQuality, .speed)
         XCTAssertEqual(settings.recognitionSource, .automatic)
+        XCTAssertEqual(settings.windowCaptureMode, .direct)
         XCTAssertEqual(settings.targetLanguage, "ja")
         XCTAssertEqual(settings.captureShortcut, .capture)
     }

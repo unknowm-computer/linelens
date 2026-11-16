@@ -25,7 +25,7 @@ final class AppModel {
     var lastUpdated: Date?
     var ocrLanguages: [String] = []
     let translation = TranslationEngine()
-    let capture = ScreenCaptureService()
+    let capture: ScreenCaptureService
     let accessibility = AccessibilityAccess()
     let updater = AppUpdater()
     let launchAtLogin = LaunchAtLoginService()
@@ -53,15 +53,21 @@ final class AppModel {
     private var needsRefresh = false
     private var lastCaptureRect: CGRect?
     private var lastVisibleRect: CGRect?
+    private var trackedWindowRegion: CaptureTarget?
     private(set) var windowsController: AppWindows?
 
-    init() {
+    init(capture: ScreenCaptureService = ScreenCaptureService()) {
+        self.capture = capture
         let stabilizer = OCRFrameStabilizer()
         ocr = OCRService(stabilizer: stabilizer)
         imageOverlay = ImageOverlaySession(stabilizer: stabilizer)
     }
 
     var hasTarget: Bool { target != nil }
+    var usesWindowScreenRegion: Bool {
+        guard case .window = target else { return false }
+        return recognitionSettings.windowCaptureMode == .screenRegion
+    }
     var isRefreshMonitoringActive: Bool { monitoring.isRefreshing }
     var isOverlayMonitoringActive: Bool { monitoring.isTrackingOverlay }
     var isInputMonitoringActive: Bool { interactions.isRunning }
@@ -143,6 +149,7 @@ final class AppModel {
         let recognitionChanged = current.ocrLanguage != previous.ocrLanguage || current.ocrMode != previous.ocrMode
             || current.recognitionSource != previous.recognitionSource
         if recognitionChanged || current.automaticRefresh != previous.automaticRefresh
+            || current.windowCaptureMode != previous.windowCaptureMode
             || current.presentation != previous.presentation || current.livePreview != previous.livePreview {
             cancelWork()
             fingerprint = nil
@@ -264,7 +271,7 @@ final class AppModel {
         }
     }
 
-    func chooseWindow() {
+    func chooseWindow(options: WindowSelectionOptions? = nil) {
         let action = UUID()
         permissionAction = action
         Task { [self] in
@@ -281,9 +288,13 @@ final class AppModel {
                     return
                 }
                 windowsController?.windowSelection.begin(windows: choices,
-                    onSelect: { [weak self] window, crop in self?.selectWindow(window, crop: crop) },
+                    options: options ?? WindowSelectionOptions(captureMode: resultOptions.windowCaptureMode),
+                    defaultCaptureMode: settings.windowCaptureMode,
+                    onSelect: { [weak self] window, options in
+                        self?.selectWindow(window, crop: options.crop, captureMode: options.captureMode)
+                    },
                     onCancel: { [weak self] in self?.cancelSelection() },
-                    onShowList: { [weak self] in self?.chooseWindowFromList() })
+                    onShowList: { [weak self] options in self?.chooseWindowFromList(options: options) })
             } catch {
                 guard isSelecting, generation == token else { return }
                 cancelSelection()
@@ -293,17 +304,17 @@ final class AppModel {
         }
     }
 
-    func chooseWindowFromList() {
+    func chooseWindowFromList(options: WindowSelectionOptions? = nil) {
         let action = UUID()
         permissionAction = action
         Task {
             guard await ensurePermission(), permissionAction == action else { return }
             beginSelection(status: "목록에서 인식할 프로그램 창을 선택하세요.")
-            windowsController?.showWindowPicker()
+            windowsController?.showWindowPicker(options: options ?? WindowSelectionOptions(captureMode: resultOptions.windowCaptureMode))
         }
     }
 
-    func selectWindow(_ window: WindowChoice, crop: Bool) {
+    func selectWindow(_ window: WindowChoice, crop: Bool, captureMode: WindowCaptureMode? = nil) {
         if crop {
             beginSelection()
             let selectionToken = generation
@@ -321,11 +332,12 @@ final class AppModel {
                 }
                 self.windowsController?.selection.begin(restrictingTo: frame) { [weak self] rect, _ in
                     guard let normalized = CaptureGeometry.normalizedCrop(rect, in: frame) else { return }
-                    self?.activate(.window(id: window.id, processID: window.processID, title: window.label, crop: normalized))
+                    self?.activate(.window(id: window.id, processID: window.processID, title: window.label, crop: normalized),
+                                   windowCaptureMode: captureMode)
                 }
             }
         } else {
-            activate(.window(id: window.id, processID: window.processID, title: window.label, crop: nil))
+            activate(.window(id: window.id, processID: window.processID, title: window.label, crop: nil), windowCaptureMode: captureMode)
             NSRunningApplication(processIdentifier: window.processID)?.activate()
         }
     }
@@ -344,7 +356,8 @@ final class AppModel {
                 showResults()
                 return
             }
-            selectWindow(WindowChoice(id: id, processID: pid, application: "", title: title, frame: frame), crop: true)
+            selectWindow(WindowChoice(id: id, processID: pid, application: "", title: title, frame: frame), crop: true,
+                         captureMode: resultOptions.windowCaptureMode)
         }
     }
 
@@ -370,11 +383,16 @@ final class AppModel {
         showResultsIfNeeded()
     }
 
-    func activate(_ nextTarget: CaptureTarget) {
+    func activate(_ nextTarget: CaptureTarget, windowCaptureMode: WindowCaptureMode? = nil) {
         windowsController?.selection.cancel()
         windowsController?.windowSelection.cancel()
         windowsController?.closeWindowPicker()
         cancelWork()
+        if case .window = nextTarget {
+            // Commit only after the full window or inner crop is confirmed.
+            // The persisted settings and cancelled selections remain untouched.
+            resultOptions.windowCaptureMode = windowCaptureMode
+        }
         target = nextTarget
         windowsController?.prepareForRecognition()
         isSelecting = false
@@ -385,6 +403,7 @@ final class AppModel {
         lastUpdated = nil
         lastCaptureRect = nil
         lastVisibleRect = nil
+        trackedWindowRegion = nil
         status = "인식 중…"
         showResultsIfNeeded()
         requestRefresh()
@@ -424,6 +443,7 @@ final class AppModel {
         isWaitingForScrollTranslation = false
         hasFreshScrollRecognition = false
         capture.stopLiveCapture()
+        trackedWindowRegion = nil
         interactionRefreshTask?.cancel()
         interactionRefreshTask = nil
         needsTranslation = false
@@ -443,8 +463,9 @@ final class AppModel {
         let active = hasTarget && !isPaused && !isSelecting
         let refresh = active && settings.automaticRefresh
         let overlay = active && settings.translationEnabled && settings.presentation != .panel
+        let tracksWindowRegion = active && usesWindowScreenRegion && refresh
         monitoring.configure(refreshInterval: refresh ? settings.refreshInterval : nil,
-            overlayInterval: overlay ? 0.1 : nil)
+            overlayInterval: overlay || tracksWindowRegion ? 0.1 : nil)
         if refresh { interactions.start() }
         else { interactions.stop() }
     }
@@ -494,14 +515,15 @@ final class AppModel {
             return
         }
         guard settings.automaticRefresh, let target, !isSelecting, !isPaused,
-              let rect = capture.visibleFrame(for: target) else { return }
+              let rect = capture.visibleFrame(for: target, windowMode: recognitionSettings.windowCaptureMode) else { return }
         let screenPoint = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.height ?? 0) - point.y)
         guard rect.contains(screenPoint) else { return }
         // Background windows may be scrolled without becoming active. Allow that
         // when visible, but do not treat input on an overlapping app as this target's.
         if case .window(_, let pid, _, _) = target,
            NSWorkspace.shared.frontmostApplication?.processIdentifier != pid,
-           capture.isOccluded(target, rect: rect, overlayWindowID: windowsController?.overlay.window?.windowNumber) { return }
+           capture.isOccluded(target, rect: rect, overlayWindowID: windowsController?.overlay.window?.windowNumber,
+                              windowMode: recognitionSettings.windowCaptureMode) { return }
         if let scroll, fadesOnScroll {
             scrollActivity.note(scroll)
             return
@@ -517,6 +539,7 @@ final class AppModel {
 
     func requestRefresh(force: Bool = false) {
         guard let target, !isSelecting, !isPaused, !isScrolling else { return }
+        synchronizeWindowRegion()
         updateRecognitionMonitoring()
         if force { fingerprint = nil }
         if case .window = target, capture.availableFrame(for: target) == nil {
@@ -533,7 +556,7 @@ final class AppModel {
         // Background checks stay silent. Show progress for the first capture or an explicit refresh.
         isCapturing = force || lastCaptureRect == nil
         captureTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.generation == token, !Task.isCancelled else { return }
             defer {
                 if self.generation == token {
                     self.isCapturing = false
@@ -545,7 +568,8 @@ final class AppModel {
                 }
             }
             do {
-                let captured = try await self.capture.capture(target, continuously: self.settings.automaticRefresh || self.settings.presentation != .panel)
+                let captured = try await self.capture.capture(target, continuously: self.settings.automaticRefresh || self.settings.presentation != .panel,
+                                                              windowMode: self.recognitionSettings.windowCaptureMode)
                 guard self.generation == token, !Task.isCancelled else { return }
                 // At a scroll boundary the pixels may not change, so ScreenCaptureKit
                 // may send no new complete frame. The current capture is still a
@@ -556,7 +580,7 @@ final class AppModel {
                 var recognizedFingerprint = captured.fingerprint
                 let method: String
                 var appBlocks: [TextBlock]?
-                if recognitionSource == .automatic,
+                if recognitionSource == .automatic, !self.usesWindowScreenRegion,
                    case .window(let id, let processID, _, _) = target,
                    let frame = ScreenCaptureService.windowFrame(id: id) {
                     appBlocks = try await self.accessibleText.read(processID: processID, windowRect: frame, captureRect: captured.screenRect)
@@ -599,6 +623,9 @@ final class AppModel {
                 let status = self.blocks.isEmpty ? "인식된 글자가 없습니다. 영역이나 OCR 언어를 조정해 보세요." : "\(self.blocks.count)개 문단 인식됨 · \(method)"
                 if self.status != status { self.status = status }
                 self.updateOverlay()
+            } catch is CancellationError {
+                // A moved display crop has no valid frame at its former position.
+                // The geometry monitor requests the current region instead.
             } catch {
                 guard self.generation == token, !Task.isCancelled else { return }
                 self.errorMessage = error.localizedDescription
@@ -653,8 +680,13 @@ final class AppModel {
     }
 
     func updateOverlay() {
+        guard hasTarget, !isSelecting, !isPaused else { windowsController?.overlay.hide(); return }
+        if synchronizeWindowRegion() {
+            requestRefresh()
+            return
+        }
         guard let target, !isSelecting, !isPaused,
-              let rect = capture.visibleFrame(for: target) else { windowsController?.overlay.hide(); return }
+              let rect = capture.visibleFrame(for: target, windowMode: recognitionSettings.windowCaptureMode) else { windowsController?.overlay.hide(); return }
         guard settings.presentation != .panel, settings.translationEnabled else {
             windowsController?.overlay.hide()
             return
@@ -684,7 +716,7 @@ final class AppModel {
         let resultWindow = windowsController?.resultWindowAboveOverlay(at: level)
         guard let exclusions = capture.overlayExclusions(for: target, rect: contentRect,
             overlayWindowID: windowsController?.overlay.window?.windowNumber, resultWindowID: resultWindow?.windowNumber,
-            excludeBrowserLinkStatus: settings.excludeBrowserLinkStatus) else {
+            excludeBrowserLinkStatus: settings.excludeBrowserLinkStatus, windowMode: recognitionSettings.windowCaptureMode) else {
             windowsController?.overlay.hide()
             return
         }
@@ -694,6 +726,24 @@ final class AppModel {
             below: resultWindow?.level == level ? resultWindow?.windowNumber : nil, excluding: exclusions)
         isWaitingForScrollTranslation = false
         hasFreshScrollRecognition = false
+    }
+
+    /// Screen crops include surrounding content, so moving or clipping the window
+    /// invalidates the image and OCR coordinates, even when its size is unchanged.
+    @discardableResult
+    private func synchronizeWindowRegion() -> Bool {
+        guard usesWindowScreenRegion, let target else { return false }
+        let current = try? capture.captureTarget(for: target, windowMode: .screenRegion)
+        guard current != trackedWindowRegion else { return false }
+        cancelWork()
+        trackedWindowRegion = current
+        blocks = []
+        usedAppText = false
+        fingerprint = nil
+        lastCaptureRect = nil
+        lastVisibleRect = nil
+        updateRecognitionMonitoring()
+        return true
     }
 
     func ensurePermission() async -> Bool {
