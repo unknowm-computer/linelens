@@ -5,6 +5,76 @@ import LineLensCore
 
 final class OverlayImageRendererTests: XCTestCase {
     @MainActor
+    private func contrastFixture(background: NSColor, foreground: NSColor) throws -> CGImage {
+        let image = NSImage(size: NSSize(width: 360, height: 160), flipped: true) { bounds in
+            background.setFill()
+            bounds.fill()
+            ("Original" as NSString).draw(at: CGPoint(x: 32, y: 40), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 40), .foregroundColor: foreground,
+            ])
+            return true
+        }
+        return try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+    }
+
+    @MainActor
+    func testLowContrastTranslationsChooseReadableBlackOrWhite() async throws {
+        let cases: [(name: String, background: NSColor, foreground: NSColor, expected: UInt8)] = [
+            ("dark-gray", NSColor(srgbRed: 48 / 255, green: 48 / 255, blue: 48 / 255, alpha: 1), .black, 255),
+            ("light-gray", NSColor(srgbRed: 210 / 255, green: 210 / 255, blue: 210 / 255, alpha: 1), .white, 0),
+            ("dark-blue", NSColor(srgbRed: 0, green: 40 / 255, blue: 110 / 255, alpha: 1), .black, 255),
+            ("mid-gray", NSColor(srgbRed: 130 / 255, green: 130 / 255, blue: 130 / 255, alpha: 1),
+             NSColor(srgbRed: 130 / 255, green: 130 / 255, blue: 130 / 255, alpha: 1), 0),
+        ]
+        for item in cases {
+            let source = try contrastFixture(background: item.background, foreground: item.foreground)
+            for style in [OverlayStyle.cover, .inPlace] {
+                var block = TextBlock(source: "Original", rect: CGRect(x: 32.0 / 360, y: 40.0 / 160,
+                    width: 280.0 / 360, height: 60.0 / 160), confidence: 1)
+                block.translation = "Readable"
+                block.fontSizeHint = 36
+                let patches = try await OverlayImageRenderer().renderPatches(image: source,
+                    pointSize: CGSize(width: 360, height: 160), blocks: [block], style: style)
+                let patch = try XCTUnwrap(patches.first)
+                let pixels = try XCTUnwrap(ImagePixels(patch.image))
+                let readablePixels = stride(from: 0, to: pixels.bytes.count, by: 4).filter { offset in
+                    pixels.bytes[offset + 3] == 255 && (0..<3).allSatisfy {
+                        abs(Int(pixels.bytes[offset + $0]) - Int(item.expected)) <= 8
+                    }
+                }.count
+                XCTAssertGreaterThan(readablePixels, 100, "\(item.name), \(style): translation needs high-contrast glyphs")
+                let result = try XCTUnwrap(OverlaySnapshotComposer.compose(source: source, patches: patches))
+                let directory = URL(fileURLWithPath: "/tmp/linelens-overlay-qa", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try NSBitmapImageRep(cgImage: result).representation(using: .png, properties: [:])?
+                    .write(to: directory.appendingPathComponent("contrast-\(item.name)-\(style.rawValue).png"))
+            }
+        }
+    }
+
+    @MainActor
+    func testReadableColoredTextKeepsItsColor() async throws {
+        let foreground = NSColor(srgbRed: 1, green: 220 / 255, blue: 40 / 255, alpha: 1)
+        let source = try contrastFixture(background: NSColor(srgbRed: 24 / 255, green: 24 / 255,
+            blue: 24 / 255, alpha: 1), foreground: foreground)
+        var block = TextBlock(source: "Original", rect: CGRect(x: 32.0 / 360, y: 40.0 / 160,
+            width: 280.0 / 360, height: 60.0 / 160), confidence: 1)
+        block.translation = "Readable"
+        block.fontSizeHint = 36
+        for style in [OverlayStyle.cover, .inPlace] {
+            let patches = try await OverlayImageRenderer().renderPatches(image: source,
+                pointSize: CGSize(width: 360, height: 160), blocks: [block], style: style)
+            let pixels = try XCTUnwrap(ImagePixels(XCTUnwrap(patches.first).image))
+            let coloredPixels = stride(from: 0, to: pixels.bytes.count, by: 4).filter { offset in
+                pixels.bytes[offset + 3] == 255 && pixels.bytes[offset] > 240
+                    && abs(Int(pixels.bytes[offset + 1]) - 220) <= 12
+                    && abs(Int(pixels.bytes[offset + 2]) - 40) <= 12
+            }.count
+            XCTAssertGreaterThan(coloredPixels, 100, "\(style): preserve the readable original color")
+        }
+    }
+
+    @MainActor
     private func fixture(dark: Bool = false) throws -> CGImage {
         let image = NSImage(size: NSSize(width: 700, height: 380), flipped: true) { bounds in
             (dark ? NSColor(calibratedWhite: 0.15, alpha: 1) : NSColor.white).setFill()

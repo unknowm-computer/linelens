@@ -243,6 +243,21 @@ private struct SampleColor {
     func distance(to other: SampleColor) -> CGFloat {
         abs(red - other.red) + abs(green - other.green) + abs(blue - other.blue)
     }
+
+    var relativeLuminance: CGFloat {
+        // Decode sRGB before comparing lightness; RGB distance alone can select
+        // black outlines as the foreground on an already dark background.
+        func linear(_ channel: CGFloat) -> CGFloat {
+            let value = channel / 255
+            return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+    }
+
+    func contrastRatio(to other: SampleColor) -> CGFloat {
+        let first = relativeLuminance, second = other.relativeLuminance
+        return (max(first, second) + 0.05) / (min(first, second) + 0.05)
+    }
 }
 
 private extension ImagePixels {
@@ -279,9 +294,15 @@ private extension ImagePixels {
         }
         let background = dominant(surrounding) ?? SampleColor(red: 32, green: 32, blue: 32)
         let contrasting = inside.filter { $0.distance(to: background) > 100 }
-        let foreground = dominant(contrasting)
-        let fallback: NSColor = background.red * 0.2126 + background.green * 0.7152 + background.blue * 0.0722 > 140 ? .black : .white
-        return (background.color, foreground?.color ?? fallback)
+        // Preserve a sampled color only when it meets the normal-text contrast
+        // threshold, including when the translation is fitted down to 9pt.
+        if let foreground = dominant(contrasting), foreground.contrastRatio(to: background) >= 4.5 {
+            return (background.color, foreground.color)
+        }
+        let luminance = background.relativeLuminance
+        let blackContrast = (luminance + 0.05) / 0.05
+        let whiteContrast = 1.05 / (luminance + 0.05)
+        return (background.color, whiteContrast > blackContrast ? .white : .black)
     }
 
     func dominant(_ colors: [SampleColor]) -> SampleColor? {
