@@ -11,6 +11,7 @@ final class TranslationEngine {
     struct LanguageChoices: Sendable {
         var sources: [String] = []
         var targets: [String] = []
+        var installed: [String] = []
     }
 
     struct LanguagePair: Equatable {
@@ -53,17 +54,63 @@ final class TranslationEngine {
         return languages.map(\.minimalIdentifier).sorted()
     }
 
+    nonisolated static func downloadedOCRLanguages(target: String, quality: TranslationQuality) async throws -> [String] {
+        let availability = makeAvailability(quality: quality)
+        let targetLanguage = Locale.Language(identifier: target)
+        var installed: [String] = []
+        for language in await availability.supportedLanguages {
+            try Task.checkCancellation()
+            if await availability.status(from: language, to: targetLanguage) == .installed {
+                installed.append(language.minimalIdentifier)
+            }
+        }
+        // Same-language translation is unsupported. An installed pairing also
+        // establishes that its target assets are present; keep target text legible.
+        if !installed.isEmpty { installed.append(targetLanguage.minimalIdentifier) }
+        return Array(Set(installed)).sorted()
+    }
+
     nonisolated static func downloadedLanguageChoices(
-        source: String, target: String, languages: [String], quality: TranslationQuality
+        source: String, target: String, languages: [String], quality: TranslationQuality,
+        includeInstalledLanguages: Bool = false
     ) async -> LanguageChoices {
         let availability = makeAvailability(quality: quality)
+        return await downloadedLanguageChoices(source: source, target: target, languages: languages,
+            includeInstalledLanguages: includeInstalledLanguages) { source, target in
+                await availability.status(from: source, to: target) == .installed
+            }
+    }
+
+    nonisolated static func downloadedLanguageChoices(
+        source: String, target: String, languages: [String], includeInstalledLanguages: Bool,
+        isInstalled: (Locale.Language, Locale.Language) async -> Bool
+    ) async -> LanguageChoices {
+        struct Pair: Hashable {
+            let source: Locale.Language
+            let target: Locale.Language
+        }
         let candidates = languages.map { Locale.Language(identifier: $0) }
         let selectedTarget = Locale.Language(identifier: target)
         let possibleSources = source == "auto" ? candidates : [Locale.Language(identifier: source)]
         var choices = LanguageChoices()
+        var checkedPairs: [Pair: Bool] = [:]
+        var installedLanguages = Set<Locale.Language>()
+
+        func checkPair(from source: Locale.Language, to target: Locale.Language) async -> Bool {
+            guard !Task.isCancelled, source != target else { return false }
+            let pair = Pair(source: source, target: target)
+            if let checked = checkedPairs[pair] { return checked }
+            let installed = await isInstalled(source, target)
+            checkedPairs[pair] = installed
+            if installed {
+                installedLanguages.insert(source)
+                installedLanguages.insert(target)
+            }
+            return installed
+        }
         for (identifier, candidate) in zip(languages, candidates) {
             guard !Task.isCancelled else { return LanguageChoices() }
-            if await availability.status(from: candidate, to: selectedTarget) == .installed {
+            if await checkPair(from: candidate, to: selectedTarget) {
                 choices.sources.append(identifier)
             }
         }
@@ -72,11 +119,23 @@ final class TranslationEngine {
         for (identifier, candidate) in zip(languages, candidates) {
             for possibleSource in possibleSources {
                 guard !Task.isCancelled else { return LanguageChoices() }
-                if await availability.status(from: possibleSource, to: candidate) == .installed {
+                if await checkPair(from: possibleSource, to: candidate) {
                     choices.targets.append(identifier)
                     break
                 }
             }
+        }
+        if includeInstalledLanguages {
+            // OCR can use either end of an installed pair, regardless of the
+            // current translation source and target. Reuse the checks above.
+            for candidate in candidates where !installedLanguages.contains(candidate) {
+                for other in candidates {
+                    guard !Task.isCancelled else { return LanguageChoices() }
+                    if await checkPair(from: candidate, to: other) { break }
+                    if await checkPair(from: other, to: candidate) { break }
+                }
+            }
+            choices.installed = languages.filter { installedLanguages.contains(Locale.Language(identifier: $0)) }
         }
         return choices
     }

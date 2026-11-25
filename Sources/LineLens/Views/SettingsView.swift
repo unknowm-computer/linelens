@@ -23,37 +23,7 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            Section("인식 및 번역") {
-                Picker("텍스트 읽기", selection: $model.settings.recognitionSource) {
-                    ForEach(TextRecognitionSource.allCases) { Text($0.title).tag($0) }
-                }
-                Text("앱 텍스트 우선은 접근성 권한을 허용한 프로그램 창에서 사용합니다. 앱이 텍스트를 제공하지 않거나 이미지·게임 화면이면 OCR로 전환합니다.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Picker("OCR 모드", selection: $model.settings.ocrMode) {
-                    ForEach(OCRMode.allCases) { Text($0.title).tag($0) }
-                }
-                OCRLanguagePicker(language: $model.settings.ocrLanguage, supportedLanguages: model.ocrLanguages)
-                Text("빠른 OCR은 영어 등 일부 언어를 지원합니다. 미지원 언어를 지정하거나 인식 신뢰도가 낮으면 정확한 OCR을 사용합니다. 한국어·일본어 화면은 OCR 언어를 지정하거나 정확한 OCR을 선택해 주세요.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("자동 번역", isOn: $model.settings.translationEnabled)
-                Picker("번역 처리", selection: $model.settings.translationQuality) {
-                    ForEach(TranslationQuality.allCases) { Text($0.title).tag($0) }
-                }
-                .disabled(!TranslationEngine.supportsQualitySelection)
-                if !TranslationEngine.supportsQualitySelection {
-                    Text("번역 품질 선택은 macOS 26.4 이상에서 지원합니다. 현재는 시스템 기본 번역을 사용합니다.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                TranslationLanguageFilter(downloadedOnly: $model.settings.downloadedTranslationLanguagesOnly,
-                    settings: model.settings, languages: model.translation.supportedLanguages) { toggle in
-                    toggle
-                } content: { choices in
-                    TranslationLanguagePickers(source: $model.settings.sourceLanguage, target: $model.settings.targetLanguage,
-                        choices: choices)
-                }
-                Text("번역은 기기에서 처리합니다. 언어 모델이 필요하면 결과 창에서 다운로드할 수 있습니다.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            recognitionAndTranslationSection
             Section("갱신 및 표시") {
                 Toggle("자동 갱신", isOn: $model.settings.automaticRefresh)
                 Picker("갱신 간격", selection: $model.settings.refreshInterval) {
@@ -91,7 +61,7 @@ struct SettingsView: View {
             Section("단축키") {
                 shortcutRow("영역 선택", shortcut: model.settings.captureShortcut, action: .capture)
                 shortcutRow("인식 해제", shortcut: model.settings.stopShortcut, action: .stop)
-                Text("해제 단축키는 기본 미지정입니다. Escape는 사용하지 않으며, 메뉴 막대에서 선택 취소·인식 해제를 할 수 있습니다.")
+                Text("Esc는 창이나 영역을 선택하는 동안 선택을 취소합니다. 인식 해제는 메뉴 막대나 지정한 단축키로 할 수 있습니다.")
                     .font(.caption).foregroundStyle(.secondary)
                 if let error = model.hotKeyError { Text(error).font(.caption).foregroundStyle(.orange) }
             }
@@ -115,6 +85,56 @@ struct SettingsView: View {
                 else { model.settings.stopShortcut = shortcut }
                 recording = nil
             } onCancel: { recording = nil }
+        }
+    }
+
+    private var recognitionAndTranslationSection: some View {
+        let downloadedOnly = model.settings.downloadedTranslationLanguagesOnly
+        return TranslationLanguageFilter(downloadedOnly: downloadedOnly, settings: model.settings,
+            languages: model.translation.supportedLanguages, includeInstalledLanguages: true) { choices, hint in
+            recognitionAndTranslationRows(choices: choices, filterHint: hint, downloadedOnly: downloadedOnly)
+        }
+    }
+
+    private func recognitionAndTranslationRows(choices: TranslationEngine.LanguageChoices, filterHint: String?,
+                                                downloadedOnly: Bool) -> some View {
+        let ocrLanguages = downloadedOnly
+            ? Array(Set(RecognitionLanguages.options(ocrLanguages: model.ocrLanguages,
+                translationLanguages: choices.installed).map(\.ocrLanguage))).sorted()
+            : model.ocrLanguages
+        return Section {
+            Picker("텍스트 읽기", selection: $model.settings.recognitionSource) {
+                ForEach(TextRecognitionSource.allCases) { Text($0.title).tag($0) }
+            }
+            Text("앱 텍스트 우선은 접근성 권한을 허용한 프로그램 창에서 사용합니다. 앱이 텍스트를 제공하지 않거나 이미지·게임 화면이면 OCR로 전환합니다.")
+                .font(.caption).foregroundStyle(.secondary)
+            Picker("OCR 모드", selection: $model.settings.ocrMode) {
+                ForEach(OCRMode.allCases) { Text($0.title).tag($0) }
+            }
+            OCRLanguagePicker(language: $model.settings.ocrLanguage, supportedLanguages: ocrLanguages)
+            Text("빠른 OCR은 영어 등 일부 언어를 지원합니다. 미지원 언어를 지정하거나 인식 신뢰도가 낮으면 정확한 OCR을 사용합니다. 한국어·일본어 화면은 OCR 언어를 지정하거나 정확한 OCR을 선택해 주세요.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("자동 번역", isOn: $model.settings.translationEnabled)
+            Picker("번역 처리", selection: $model.settings.translationQuality) {
+                ForEach(TranslationQuality.allCases) { Text($0.title).tag($0) }
+            }
+            .disabled(!TranslationEngine.supportsQualitySelection)
+            if !TranslationEngine.supportsQualitySelection {
+                Text("번역 품질 선택은 macOS 26.4 이상에서 지원합니다. 현재는 시스템 기본 번역을 사용합니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            TranslationLanguagePickers(source: $model.settings.sourceLanguage, target: $model.settings.targetLanguage,
+                choices: choices)
+            if let filterHint { Text(filterHint).font(.caption).foregroundStyle(.secondary) }
+            Text("번역은 기기에서 처리합니다. 언어 모델이 필요하면 결과 창에서 다운로드할 수 있습니다.")
+                .font(.caption).foregroundStyle(.secondary)
+        } header: {
+            HStack {
+                Text("인식 및 번역")
+                Spacer(minLength: 8)
+                Toggle("다운로드한 언어만 표시", isOn: $model.settings.downloadedTranslationLanguagesOnly)
+                    .toggleStyle(.checkbox).controlSize(.small).font(.caption)
+            }
         }
     }
 

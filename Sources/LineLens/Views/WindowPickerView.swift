@@ -54,6 +54,7 @@ struct WindowPickerView: View {
                 Text("창은 사용자가 인식 해제할 때까지 유지됩니다.").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("닫기") { onClose(); model.cancelSelection() }
+                    .keyboardShortcut(.cancelAction)
                 Button(options.crop ? "영역 지정" : "인식 시작") {
                     guard let window = windows.first(where: { $0.id == selected }) else { return }
                     let selection = options

@@ -21,6 +21,18 @@ final class RecognitionLanguagesTests: XCTestCase {
         XCTAssertTrue(RecognitionLanguages.options(ocrLanguages: ["zh-Hans"], translationLanguages: ["zh-TW"]).isEmpty)
     }
 
+    func testInstalledLanguagesLeadOCRPriorityWithoutRemovingOtherLanguages() {
+        XCTAssertEqual(RecognitionLanguages.ocrPriority(downloadedLanguages: ["ja", "en-GB", "ja", "not-supported"],
+            supportedLanguages: ["fr-FR", "en-US", "ja-JP", "ko-KR"]), ["en-US", "ja-JP", "fr-FR", "ko-KR"])
+        XCTAssertEqual(RecognitionLanguages.ocrPriority(downloadedLanguages: ["zh-TW"],
+            supportedLanguages: ["zh-Hans", "en-US", "zh-Hant"]), ["zh-Hant", "zh-Hans", "en-US"])
+    }
+
+    func testMissingOrUnsupportedInstalledLanguagesLeaveVisionDefaultsAvailable() {
+        XCTAssertEqual(RecognitionLanguages.ocrPriority(downloadedLanguages: [], supportedLanguages: ["en-US"]), [])
+        XCTAssertEqual(RecognitionLanguages.ocrPriority(downloadedLanguages: ["ja", "ko"], supportedLanguages: ["en-US", "fr-FR"]), [])
+    }
+
     @MainActor
     func testUnifiedSelectionUpdatesSessionLanguagesAndWaitsForFreshRecognition() {
         let original = AppSettings.load()

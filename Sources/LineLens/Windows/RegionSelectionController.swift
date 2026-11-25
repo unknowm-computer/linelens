@@ -3,9 +3,10 @@ import LineLensCore
 
 @MainActor
 final class RegionSelectionController {
-    private var windows: [NSWindow] = []
+    private var windows: [SelectionPanel] = []
 
-    func begin(restrictingTo bounds: CGRect? = nil, completion: @escaping (CGRect, CGDirectDisplayID) -> Void) {
+    func begin(restrictingTo bounds: CGRect? = nil, onCancel: @escaping () -> Void,
+               completion: @escaping (CGRect, CGDirectDisplayID) -> Void) {
         cancel()
         for screen in NSScreen.screens {
             guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else { continue }
@@ -20,11 +21,13 @@ final class RegionSelectionController {
                 self?.cancel()
                 completion(global, id)
             }
-            addWindow(on: screen, view: view)
+            addWindow(on: screen, view: view, onCancel: onCancel)
         }
+        SelectionPanel.focusSelection(in: windows)
     }
 
-    func edit(rect: CGRect, displayID: CGDirectDisplayID, completion: @escaping (CGRect, CGDirectDisplayID) -> Void) {
+    func edit(rect: CGRect, displayID: CGDirectDisplayID, onCancel: @escaping () -> Void,
+              completion: @escaping (CGRect, CGDirectDisplayID) -> Void) {
         cancel()
         guard let screen = NSScreen.screens.first(where: {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
@@ -37,20 +40,25 @@ final class RegionSelectionController {
             self?.cancel()
             completion(local.offsetBy(dx: screenFrame.minX, dy: screenFrame.minY), displayID)
         }
-        addWindow(on: screen, view: view)
+        addWindow(on: screen, view: view, onCancel: onCancel)
+        SelectionPanel.focusSelection(in: windows)
     }
 
     private var mainDisplayHeight: CGFloat { NSScreen.screens.first?.frame.height ?? 0 }
 
-    private func addWindow(on screen: NSScreen, view: SelectionView) {
-        let window = NSWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    private func addWindow(on screen: NSScreen, view: SelectionView, onCancel: @escaping () -> Void) {
+        let window = SelectionPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
+                                    backing: .buffered, defer: false)
+        window.title = "LineLens · 영역 선택"
         window.isReleasedWhenClosed = false
         window.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue - 1)
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = false
+        window.hidesOnDeactivate = false
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.contentView = view
+        window.onCancel = onCancel
         window.orderFrontRegardless()
         windows.append(window)
     }
@@ -106,8 +114,8 @@ private final class SelectionView: NSView {
             let label = "\(Int(selection.width)) × \(Int(selection.height))"
             drawLabel(label, at: CGPoint(x: selection.minX, y: min(selection.maxY + 8, bounds.maxY - 35)))
         }
-        let text = editing ? "영역 안을 드래그해 이동 · 오른쪽 아래를 드래그해 크기 변경 · 놓으면 적용 · 취소는 메뉴에서"
-            : "인식할 영역을 드래그하세요 · 취소는 메뉴 막대의 ‘선택 취소’"
+        let text = editing ? "영역 안을 드래그해 이동 · 오른쪽 아래를 드래그해 크기 변경 · 놓으면 적용 · Esc로 취소"
+            : "인식할 영역을 드래그하세요 · Esc로 취소"
         drawLabel(text, at: CGPoint(x: max(24, allowed.minX + 16), y: max(52, allowed.minY + 16)))
     }
 

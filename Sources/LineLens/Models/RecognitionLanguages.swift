@@ -31,4 +31,14 @@ enum RecognitionLanguages {
             $0.ocrLanguage == ocrLanguage && Locale.Language(identifier: $0.id).minimalIdentifier == source
         }?.id ?? customSelection
     }
+
+    static func ocrPriority(downloadedLanguages: [String], supportedLanguages: [String]) -> [String] {
+        let preferred = options(ocrLanguages: supportedLanguages, translationLanguages: downloadedLanguages)
+            .map(\.ocrLanguage)
+        guard !preferred.isEmpty else { return [] }
+        // Preserve other Vision languages as lower-priority candidates. Installed
+        // Translation models are a preference, not an OCR language restriction.
+        var seen = Set<String>()
+        return (preferred + supportedLanguages).filter { seen.insert($0).inserted }
+    }
 }

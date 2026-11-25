@@ -4,6 +4,20 @@ import LineLensCore
 @testable import LineLens
 
 final class TranslationLanguageTests: XCTestCase {
+    func testDownloadedFilterKeepsOCRLanguagesFromPairsOutsideCurrentTranslation() async {
+        let installedPairs = ["en/ko", "ja/en", "fr/it"]
+        let choices = await TranslationEngine.downloadedLanguageChoices(source: "en", target: "ko",
+            languages: ["de", "en", "fr", "it", "ja", "ko"], includeInstalledLanguages: true) { source, target in
+                installedPairs.contains("\(source.minimalIdentifier)/\(target.minimalIdentifier)")
+            }
+        XCTAssertEqual(choices.sources, ["en"])
+        XCTAssertEqual(choices.targets, ["ko"])
+        XCTAssertEqual(choices.installed, ["en", "fr", "it", "ja", "ko"])
+        let options = RecognitionLanguages.options(ocrLanguages: ["de-DE", "en-US", "fr-FR", "it-IT", "ja-JP", "ko-KR", "th-TH"],
+            translationLanguages: choices.installed)
+        XCTAssertEqual(options.map(\.ocrLanguage), ["en-US", "fr-FR", "it-IT", "ja-JP", "ko-KR"])
+    }
+
     @MainActor
     func testTextCacheSurvivesScrollCancellationAndUsesNewBlockIdentifiers() async throws {
         guard #available(macOS 26, *) else { throw XCTSkip("Direct installed sessions require macOS 26") }

@@ -50,6 +50,33 @@ final class OCRServiceTests: XCTestCase {
         XCTAssertTrue(next.blocks?.map(\.source).joined(separator: " ").contains("124") == true)
     }
 
+    func testAutomaticRequestPrioritizesInstalledLanguagesAndExplicitLanguageStillWins() throws {
+        let automatic = try OCRService.recognitionRequest(language: "auto", mode: .accurate, preferredLanguages: ["ja", "ko"])
+        XCTAssertTrue(automatic.automaticallyDetectsLanguage)
+        XCTAssertEqual(Array(automatic.recognitionLanguages.prefix(2)), ["ja-JP", "ko-KR"])
+        XCTAssertTrue(automatic.recognitionLanguages.contains("en-US"), "Other scripts must remain detectable")
+        let explicit = try OCRService.recognitionRequest(language: "en-US", mode: .accurate, preferredLanguages: ["ja", "ko"])
+        XCTAssertEqual(explicit.recognitionLanguages, ["en-US"])
+        XCTAssertFalse(explicit.automaticallyDetectsLanguage)
+        let fast = try OCRService.recognitionRequest(language: "auto", mode: .fast, preferredLanguages: ["en", "ja", "ko"])
+        XCTAssertEqual(fast.recognitionLanguages.first, "en-US")
+        XCTAssertEqual(fast.recognitionLevel, .fast)
+        XCTAssertTrue(Set(fast.recognitionLanguages).isSubset(of: Set(try fast.supportedRecognitionLanguages())))
+    }
+
+    @MainActor
+    func testAutomaticVisionStillRecognizesOtherLanguagesAndRefreshesUnchangedImageWhenPriorityChanges() async throws {
+        let service = OCRService()
+        let image = try textImage("Hello LineLens 123")
+        let first = try await service.recognize(image, language: "auto", previousFingerprint: nil, preferredLanguages: ["ja", "ko"])
+        XCTAssertTrue(first.blocks?.contains { $0.source.contains("Hello LineLens 123") } == true)
+        let unchanged = try await service.recognize(image, language: "auto", previousFingerprint: first.fingerprint, preferredLanguages: ["ja", "ko"])
+        XCTAssertNil(unchanged.blocks)
+        let changedPriority = try await service.recognize(image, language: "auto", previousFingerprint: first.fingerprint, preferredLanguages: ["en"])
+        XCTAssertNotNil(changedPriority.blocks, "Newly installed languages must invalidate OCR even if the pixels are identical")
+        XCTAssertEqual(changedPriority.fingerprint, first.fingerprint)
+    }
+
     @MainActor
     func testBackgroundOnlyChangePreservesRecognizedTextAndTranslation() async throws {
         let service = OCRService()

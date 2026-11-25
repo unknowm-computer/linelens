@@ -7,12 +7,8 @@ struct OCRLanguagePicker: View {
     var body: some View {
         Picker("OCR 언어", selection: $language) {
             Text("자동 감지").tag("auto")
-            ForEach(languages, id: \.self) { Text(languageName($0)).tag($0) }
+            TranslationLanguageOptions(languages: supportedLanguages, current: language == "auto" ? nil : language)
         }
-    }
-
-    private var languages: [String] {
-        Set(supportedLanguages + (language == "auto" ? [] : [language])).sorted()
     }
 }
 
@@ -53,13 +49,13 @@ struct TranslationLanguageOptions: View {
     }
 }
 
-struct TranslationLanguageFilter<Header: View, Content: View>: View {
-    @Binding var downloadedOnly: Bool
+struct TranslationLanguageFilter<Content: View>: View {
+    let downloadedOnly: Bool
     let settings: AppSettings
     let languages: [String]
     var sourceText = ""
-    @ViewBuilder let header: (Toggle<Text>) -> Header
-    @ViewBuilder let content: (TranslationEngine.LanguageChoices) -> Content
+    var includeInstalledLanguages = false
+    @ViewBuilder let content: (TranslationEngine.LanguageChoices, String?) -> Content
     @State private var loaded: (query: Query, choices: TranslationEngine.LanguageChoices)?
 
     private struct Query: Equatable {
@@ -81,25 +77,20 @@ struct TranslationLanguageFilter<Header: View, Content: View>: View {
         let choices = downloadedOnly
             ? downloaded ?? TranslationEngine.LanguageChoices()
             : TranslationEngine.LanguageChoices(sources: languages, targets: languages)
-        header(Toggle("다운로드한 언어만 표시", isOn: $downloadedOnly))
+        let hint = query.map { query in
+            downloaded.map { filterHint($0, automaticSource: query.source == "auto") }
+                ?? "다운로드한 언어를 확인하는 중…"
+        }
+        content(choices, hint)
             .task(id: query) {
                 loaded = nil
                 guard let query, !query.languages.isEmpty else { return }
                 let choices = await TranslationEngine.downloadedLanguageChoices(source: query.source,
-                    target: query.target, languages: query.languages, quality: query.quality)
+                    target: query.target, languages: query.languages, quality: query.quality,
+                    includeInstalledLanguages: includeInstalledLanguages)
                 guard !Task.isCancelled else { return }
                 loaded = (query, choices)
             }
-        content(choices)
-        if let query {
-            if let downloaded {
-                Text(filterHint(downloaded, automaticSource: query.source == "auto"))
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("다운로드한 언어를 확인하는 중…")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
     }
 
     private func filterHint(_ choices: TranslationEngine.LanguageChoices, automaticSource: Bool) -> String {

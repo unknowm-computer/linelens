@@ -5,7 +5,7 @@ import SwiftUI
 
 @MainActor
 final class WindowSelectionController {
-    private var panels: [NSPanel] = []
+    private var panels: [SelectionPanel] = []
     private var views: [WindowSelectionView] = []
     private var candidates: [CGWindowID: WindowChoice] = [:]
     private var timer: Timer?
@@ -39,8 +39,8 @@ final class WindowSelectionController {
             view.addSubview(toolbar)
             view.toolbarFrame = toolbar.frame
             view.onClick = { [weak self] point in self?.select(at: point) }
-            let panel = WindowSelectionPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
-                                            backing: .buffered, defer: false)
+            let panel = SelectionPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
+                                       backing: .buffered, defer: false)
             panel.title = "LineLens · 클릭으로 창 선택"
             panel.isReleasedWhenClosed = false
             panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue - 1)
@@ -51,10 +51,12 @@ final class WindowSelectionController {
             panel.acceptsMouseMovedEvents = true
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.contentView = view
+            panel.onCancel = { [weak self] in self?.finishCancellation() }
             panel.orderFrontRegardless()
             panels.append(panel)
             views.append(view)
         }
+        SelectionPanel.focusSelection(in: panels)
         updateHover()
         // Poll only during selection so a moving/closing window updates even
         // when the pointer is stationary. No global input monitor is needed.
@@ -143,12 +145,6 @@ private final class WindowSelectionState {
     init(options: WindowSelectionOptions = WindowSelectionOptions()) { self.options = options }
 }
 
-private final class WindowSelectionPanel: NSPanel {
-    // Keep keyboard focus in the current app while choosing with the pointer.
-    override var canBecomeKey: Bool { false }
-    override var canBecomeMain: Bool { false }
-}
-
 private struct WindowSelectionToolbar: View {
     @Bindable var state: WindowSelectionState
     let defaultCaptureMode: WindowCaptureMode
@@ -161,7 +157,7 @@ private struct WindowSelectionToolbar: View {
                 Label("인식할 창을 클릭하세요", systemImage: "cursorarrow.click.2").font(.headline)
                 Spacer()
                 Button("목록에서 선택", action: showList)
-                Button("취소", action: cancel)
+                Button("취소", action: cancel).help("Esc로 선택 취소")
             }
             HStack {
                 Picker("인식 범위", selection: $state.options.crop) {

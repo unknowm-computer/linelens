@@ -30,6 +30,7 @@ final class AppModel {
     let updater = AppUpdater()
     let launchAtLogin = LaunchAtLoginService()
     private var ocr: OCRService
+    private let ocrLanguagePreferences = OCRLanguagePreferences()
     private let accessibleText = AccessibilityTextService()
     private let imageOverlay: ImageOverlaySession
     private let interactions = OverlayInteractionMonitor()
@@ -265,7 +266,7 @@ final class AppModel {
         Task { [self] in
             guard await ensurePermission(), permissionAction == action else { return }
             beginSelection()
-            windowsController?.selection.begin { [weak self] rect, displayID in
+            windowsController?.selection.begin(onCancel: { [weak self] in self?.cancelSelection() }) { [weak self] rect, displayID in
                 self?.activate(.region(displayID: displayID, rect: rect))
             }
         }
@@ -276,7 +277,7 @@ final class AppModel {
         permissionAction = action
         Task { [self] in
             guard await ensurePermission(), permissionAction == action else { return }
-            beginSelection(status: "인식할 창을 클릭하세요. 선택 취소는 화면 위 버튼이나 메뉴에서 할 수 있습니다.")
+            beginSelection(status: "인식할 창을 클릭하세요. Esc로 취소할 수 있습니다.")
             let token = generation
             do {
                 let choices = try await capture.windows()
@@ -330,7 +331,8 @@ final class AppModel {
                     if self.hasTarget { self.fingerprint = nil; self.requestRefresh() }
                     return
                 }
-                self.windowsController?.selection.begin(restrictingTo: frame) { [weak self] rect, _ in
+                self.windowsController?.selection.begin(restrictingTo: frame,
+                    onCancel: { [weak self] in self?.cancelSelection() }) { [weak self] rect, _ in
                     guard let normalized = CaptureGeometry.normalizedCrop(rect, in: frame) else { return }
                     self?.activate(.window(id: window.id, processID: window.processID, title: window.label, crop: normalized),
                                    windowCaptureMode: captureMode)
@@ -347,7 +349,8 @@ final class AppModel {
         switch target {
         case .region(let displayID, let rect):
             beginSelection()
-            windowsController?.selection.edit(rect: rect, displayID: displayID) { [weak self] rect, id in
+            windowsController?.selection.edit(rect: rect, displayID: displayID,
+                onCancel: { [weak self] in self?.cancelSelection() }) { [weak self] rect, id in
                 self?.activate(.region(displayID: id, rect: rect))
             }
         case .window(let id, let pid, let title, _):
@@ -361,7 +364,7 @@ final class AppModel {
         }
     }
 
-    private func beginSelection(status: String = "드래그로 영역을 선택하세요. 취소는 메뉴 막대에서 할 수 있습니다.") {
+    private func beginSelection(status: String = "드래그로 영역을 선택하세요. Esc로 취소할 수 있습니다.") {
         windowsController?.selection.cancel()
         windowsController?.windowSelection.cancel()
         windowsController?.overlay.hide()
@@ -552,6 +555,8 @@ final class AppModel {
         let language = recognitionSettings.ocrLanguage
         let mode = settings.ocrMode
         let recognitionSource = recognitionSettings.recognitionSource
+        let targetLanguage = recognitionSettings.targetLanguage
+        let translationQuality = recognitionSettings.translationQuality
         let previous = fingerprint
         // Background checks stay silent. Show progress for the first capture or an explicit refresh.
         isCapturing = force || lastCaptureRect == nil
@@ -591,8 +596,12 @@ final class AppModel {
                     newBlocks = appBlocks
                     method = "앱 텍스트"
                 } else {
+                    let preferredLanguages = language == "auto"
+                        ? try await self.ocrLanguagePreferences.languages(target: targetLanguage, quality: translationQuality, forceRefresh: force) : []
+                    guard self.generation == token, !Task.isCancelled else { return }
                     let result = try await self.ocr.recognize(captured.image, language: language, previousFingerprint: self.usedAppText ? nil : previous,
-                        fingerprint: captured.fingerprint, mode: mode, pixels: captured.pixels, sequence: captured.sequence)
+                        fingerprint: captured.fingerprint, mode: mode, pixels: captured.pixels, sequence: captured.sequence,
+                        preferredLanguages: preferredLanguages)
                     newBlocks = result.blocks
                     recognizedFingerprint = result.fingerprint
                     method = result.effectiveMode == .fast ? "빠른 OCR" : "정확한 OCR"

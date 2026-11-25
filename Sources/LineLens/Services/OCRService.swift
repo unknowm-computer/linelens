@@ -15,6 +15,7 @@ actor OCRService {
     private var previousPixels: ImagePixels?
     private var previousBlocks: [TextBlock] = []
     private var previousLanguage: String?
+    private var previousPreferredLanguages: [String] = []
     private var previousMode: OCRMode?
     private var cachedFingerprint: UInt64?
     private var lastEffectiveMode: OCRMode = .accurate
@@ -31,7 +32,8 @@ actor OCRService {
     }
 
     func recognize(_ image: CGImage, language: String, previousFingerprint: UInt64?, fingerprint knownFingerprint: UInt64? = nil,
-                   mode: OCRMode = .accurate, pixels knownPixels: ImagePixels? = nil, sequence: UInt64 = 0) async throws -> Result {
+                   mode: OCRMode = .accurate, pixels knownPixels: ImagePixels? = nil, sequence: UInt64 = 0,
+                   preferredLanguages: [String] = []) async throws -> Result {
         try Task.checkCancellation()
         let rawPixels = knownPixels ?? ImagePixels(image)
         let rawFingerprint = knownFingerprint ?? rawPixels?.fingerprint ?? ImageFingerprint.make(image)
@@ -41,7 +43,9 @@ actor OCRService {
         let fingerprint = normalized.image === image ? rawFingerprint : normalized.pixels?.fingerprint ?? ImageFingerprint.make(normalized.image)
         let image = normalized.image
         let pixels = normalized.pixels
+        let preferredLanguages = language == "auto" ? preferredLanguages : []
         let configurationMatches = previousLanguage == language && previousMode == mode
+            && previousPreferredLanguages == preferredLanguages
         if fingerprint == previousFingerprint && fingerprint == cachedFingerprint && configurationMatches {
             return Result(fingerprint: fingerprint, blocks: nil, processedRegions: [], effectiveMode: lastEffectiveMode)
         }
@@ -61,7 +65,7 @@ actor OCRService {
             guard let crop = image.cropping(to: pixelRect) else { continue }
             let normalized = CGRect(x: pixelRect.minX / imageBounds.width, y: pixelRect.minY / imageBounds.height,
                                     width: pixelRect.width / imageBounds.width, height: pixelRect.height / imageBounds.height)
-            var lines = try recognizeLines(crop, language: language, mode: regionMode)
+            var lines = try recognizeLines(crop, language: language, mode: regionMode, preferredLanguages: preferredLanguages)
             // Fast Vision supports fewer scripts. Auto language can return no text
             // or weak Latin guesses for other scripts; retry those regions accurately.
             // Fast Vision commonly reports 0.5 even for clean English text;
@@ -70,7 +74,7 @@ actor OCRService {
                 let needsFallback = lines.isEmpty ? try containsText(crop)
                     : lines.map(\.confidence).reduce(0, +) / Float(lines.count) < 0.3
                 if needsFallback {
-                    lines = try recognizeLines(crop, language: language, mode: .accurate)
+                    lines = try recognizeLines(crop, language: language, mode: .accurate, preferredLanguages: preferredLanguages)
                     usedMode = .accurate
                 }
             }
@@ -92,6 +96,7 @@ actor OCRService {
         previousPixels = pixels
         previousBlocks = blocks
         previousLanguage = language
+        previousPreferredLanguages = preferredLanguages
         previousMode = mode
         cachedFingerprint = fingerprint
         lastEffectiveMode = usedMode
@@ -112,16 +117,27 @@ actor OCRService {
         return !(request.results ?? []).isEmpty
     }
 
-    private func recognizeLines(_ image: CGImage, language: String, mode: OCRMode) throws -> [TextLine] {
-        if let recognizer { return try recognizer(image, language, mode) }
+    nonisolated static func recognitionRequest(language: String, mode: OCRMode, preferredLanguages: [String] = []) throws -> VNRecognizeTextRequest {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = mode == .fast ? .fast : .accurate
         request.usesLanguageCorrection = mode == .accurate
-        if language == "auto" { request.automaticallyDetectsLanguage = true }
-        else {
+        if language == "auto" {
+            request.automaticallyDetectsLanguage = true
+            if !preferredLanguages.isEmpty {
+                let ordered = RecognitionLanguages.ocrPriority(downloadedLanguages: preferredLanguages,
+                    supportedLanguages: try request.supportedRecognitionLanguages())
+                if !ordered.isEmpty { request.recognitionLanguages = ordered }
+            }
+        } else {
             guard try request.supportedRecognitionLanguages().contains(language) else { throw LineLensError.unsupportedOCR }
             request.recognitionLanguages = [language]
         }
+        return request
+    }
+
+    private func recognizeLines(_ image: CGImage, language: String, mode: OCRMode, preferredLanguages: [String]) throws -> [TextLine] {
+        if let recognizer { return try recognizer(image, language, mode) }
+        let request = try Self.recognitionRequest(language: language, mode: mode, preferredLanguages: preferredLanguages)
         try VNImageRequestHandler(cgImage: image).perform([request])
         try Task.checkCancellation()
         return (request.results ?? []).compactMap { observation in
